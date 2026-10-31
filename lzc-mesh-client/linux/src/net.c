@@ -73,7 +73,7 @@ static void update_clipboard_status(void) {
     if (!clipboard_available()) app_set_status(S_CLIPBOARD, ST_WARN, "当前合成器不支持 wlr-data-control，无法共享剪贴板");
     else if (!app.hub_connected) app_set_status(S_CLIPBOARD, ST_UNKNOWN, "等待连接中枢");
     else if (app.clipboard_enabled) app_set_status(S_CLIPBOARD, ST_OK, "已开启：复制的文本会同步到其他在线设备");
-    else app_set_status(S_CLIPBOARD, ST_UNKNOWN, "未开启（在管理页面“设置”中开启）");
+    else app_set_status(S_CLIPBOARD, ST_UNKNOWN, "已关闭（可在管理页面或托盘菜单中开启）");
 }
 
 static void mesh_device_free(gpointer p) {
@@ -127,7 +127,7 @@ static void on_state(JsonObject *o) {
     if (settings && JSON_NODE_HOLDS_OBJECT(settings)) {
         JsonObject *so = json_node_get_object(settings);
         app.swap_cmd_ctrl = json_object_get_boolean_member_with_default(so, "swap_cmd_ctrl", true);
-        bool clip = json_object_get_boolean_member_with_default(so, "clipboard", false);
+        bool clip = json_object_get_boolean_member_with_default(so, "clipboard", true);
         if (clip != app.clipboard_enabled) app_log("共享剪贴板已%s", clip ? "开启" : "关闭");
         app.clipboard_enabled = clip;
     }

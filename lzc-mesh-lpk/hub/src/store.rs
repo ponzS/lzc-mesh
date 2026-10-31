@@ -75,3 +75,17 @@ impl Store {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layouts_saved_before_the_clipboard_setting_existed_get_it_on() {
+        let old: Snapshot = serde_json::from_str(r#"{"devices":{},"settings":{"swap_cmd_ctrl":false}}"#).unwrap();
+        assert!(old.settings.clipboard && !old.settings.swap_cmd_ctrl);
+        let explicit: Snapshot = serde_json::from_str(r#"{"settings":{"swap_cmd_ctrl":true,"clipboard":false}}"#).unwrap();
+        assert!(!explicit.settings.clipboard, "an explicit choice is kept");
+        assert!(Snapshot::default().settings.clipboard);
+    }
+}

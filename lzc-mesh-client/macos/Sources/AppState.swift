@@ -122,7 +122,7 @@ final class AppState {
     func updateClipboardStatus() {
         if !hubConnected { set(.clipboard, .unknown, "等待连接中枢") }
         else if clipboardEnabled { set(.clipboard, .ok, "已开启：复制的文本会同步到其他在线设备") }
-        else { set(.clipboard, .unknown, "未开启（在管理页面“设置”中开启）") }
+        else { set(.clipboard, .unknown, "已关闭（可在管理页面或菜单栏中开启）") }
     }
 
     func updateControlStatus() {

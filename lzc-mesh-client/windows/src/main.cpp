@@ -94,7 +94,7 @@ void updateControlStatus() {
 void updateClipboardStatus() {
     if (!g.hubConnected) setStatus(S_CLIPBOARD, L_UNKNOWN, L"等待连接中枢");
     else if (g.clipboardEnabled) setStatus(S_CLIPBOARD, L_OK, L"已开启：复制的文本会同步到其他在线设备");
-    else setStatus(S_CLIPBOARD, L_UNKNOWN, L"未开启（在管理页面“设置”中开启）");
+    else setStatus(S_CLIPBOARD, L_UNKNOWN, L"已关闭（可在管理页面或托盘菜单中开启）");
 }
 
 void updateScreenStatus() {
@@ -170,7 +170,7 @@ void onHubText(const std::string &text) {
         g.activeSource = o["active"]["source"].str();
         g.activeTarget = o["active"]["target"].str();
         g.swapCmdCtrl = o["settings"]["swap_cmd_ctrl"].boolean(true);
-        bool clip = o["settings"]["clipboard"].boolean(false);
+        bool clip = o["settings"]["clipboard"].boolean(true);
         if (clip != g.clipboardEnabled) logLine(clip ? L"共享剪贴板已开启" : L"共享剪贴板已关闭");
         g.clipboardEnabled = clip;
         updateClipboardStatus();

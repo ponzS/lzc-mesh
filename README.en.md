@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | English
 
-Control several computers in front of you (macOS, Windows, Linux) with one keyboard and trackpad/mouse. Only the cursor and keyboard are synced; no screen is streamed. It also offers a shared clipboard (text, off by default) and file sharing across devices. Devices talk to each other over the LazyCat network.
+Control several computers in front of you (macOS, Windows, Linux) with one keyboard and trackpad/mouse. Only the cursor and keyboard are synced; no screen is streamed. It also offers a shared clipboard (text, on by default) and file sharing across devices. Devices talk to each other over the LazyCat network.
 
 ## Layout
 
@@ -19,7 +19,7 @@ Control several computers in front of you (macOS, Windows, Linux) with one keybo
 - Clients connect to the hub's WebSocket `/api/ws` over the LazyCat network.
 - When the cursor is pushed against an edge that has a neighbouring screen, the local cursor is locked and hidden, motion and keys are forwarded to the hub, and the hub hands the cursor to the neighbouring device according to the layout. Keys travel as Linux evdev key codes on every platform.
 - While controlling another device, press Ctrl+Alt+Esc (Ctrl+Option+Esc on a Mac) to take control back immediately.
-- The shared clipboard is turned on under "Settings" on the management page and is off by default. It syncs text only, up to 256 KB. The hub relays it between the account's online devices and never stores it. Content that password managers mark as concealed is never synced.
+- The shared clipboard is on by default and can be turned off under "Settings" on the management page or from a client's tray menu. It syncs text only, up to 256 KB. The hub relays it between the account's online devices and never stores it. Content that password managers mark as concealed is never synced.
 - File sharing: upload from the management page or any client window, and every device of the same account can download it. Files are stored on the box in `/lzcapp/var/files`, up to 4 GB each.
 
 ## Download

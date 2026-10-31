@@ -13,7 +13,7 @@ const clipboardToggle = document.getElementById("clipboard")
 
 const PLATFORM = { macos: "macOS", windows: "Windows", linux: "Linux" }
 let ws = null
-let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true, clipboard: false } }
+let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true, clipboard: true } }
 let view = { scale: 1, ox: 0, oy: 0 }
 let drag = null
 

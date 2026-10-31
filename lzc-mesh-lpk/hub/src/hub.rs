@@ -552,7 +552,7 @@ mod clipboard_tests {
     use super::*;
 
     #[test]
-    fn clipboard_is_off_by_default_and_never_echoed() {
+    fn clipboard_is_on_by_default_can_be_turned_off_and_never_echoed() {
         let mut r = super::tests_support::room();
         let mut mac = super::tests_support::hello(&mut r, 1, "mac", Platform::Macos, 1470.0, 956.0);
         let mut win = super::tests_support::hello(&mut r, 2, "win", Platform::Windows, 1707.0, 960.0);
@@ -565,14 +565,15 @@ mod clipboard_tests {
             }
             n
         };
-        r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
-        assert_eq!(clip(&mut win), 0, "relayed while disabled");
-
-        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(true) });
-        assert!(r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
+        assert!(r.snapshot.settings.clipboard, "clipboard sharing should be on by default");
         r.handle(1, ClientMsg::Clipboard { text: "hello".into() });
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
+
+        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false) });
+        assert!(!r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
+        r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
+        assert_eq!(clip(&mut win), 0, "relayed while disabled");
     }
 }
 

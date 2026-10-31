@@ -86,15 +86,20 @@ pub struct DeviceView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub swap_cmd_ctrl: bool,
-    /// Shared clipboard between the account's devices. Off unless enabled on the layout page.
-    #[serde(default)]
+    /// Shared clipboard between the account's devices. On by default; can be turned off on
+    /// the layout page or from a client's tray menu.
+    #[serde(default = "default_true")]
     pub clipboard: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { swap_cmd_ctrl: true, clipboard: false }
+        Self { swap_cmd_ctrl: true, clipboard: true }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]

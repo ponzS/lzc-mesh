@@ -126,7 +126,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.activeTarget = active?["target"] as? String
             let settings = o["settings"] as? [String: Any]
             s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
-            let clip = settings?["clipboard"] as? Bool ?? false
+            let clip = settings?["clipboard"] as? Bool ?? true
             if clip != s.clipboardEnabled { s.log("共享剪贴板已\(clip ? "开启" : "关闭")") }
             s.clipboardEnabled = clip
             s.updateClipboardStatus()
