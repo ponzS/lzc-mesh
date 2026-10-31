@@ -1,5 +1,7 @@
 # 懒猫设备接力（LZC Mesh）
 
+简体中文 | [English](README.en.md)
+
 用一套键盘和触控板/鼠标控制面前的多台电脑（macOS、Windows、Linux）。只同步光标和键盘，不传画面。还支持共享剪贴板（文本，默认关闭）和跨设备文件共享。设备之间通过懒猫网络通信。
 
 ## 目录
@@ -60,7 +62,7 @@ cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 
 ## 状态
 
-macOS ↔ Windows 已真机验证。Linux 客户端已编译并能连上中枢，输入注入尚未真机验证。
+macOS ↔ Windows 已真机验证光标跨屏、键盘、长按连发、共享剪贴板、文件共享和布局同步。Linux 客户端已编译并能连上中枢，输入注入、剪贴板和文件面板尚未真机验证。
 
 ## 许可证
 
