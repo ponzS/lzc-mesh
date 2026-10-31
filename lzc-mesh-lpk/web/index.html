@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LZC Mesh</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">LZC Mesh</div>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">连接中…</span></div>
+</header>
+<main>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>屏幕布局</h2>
+      <span class="hint">拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备</span>
+    </div>
+    <div id="stage" class="stage"><div id="empty" class="empty">还没有设备。在电脑上安装并打开 LZC Mesh 客户端后，屏幕会出现在这里。</div></div>
+  </section>
+  <section class="side">
+    <div class="panel">
+      <h2>设备</h2>
+      <ul id="devices" class="devices"></ul>
+    </div>
+    <div class="panel">
+      <h2>设置</h2>
+      <label class="row"><input type="checkbox" id="swap"> Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl</label>
+      <p class="note">控制其他设备时，按 Ctrl + Alt + Esc 可立即把光标收回本机。</p>
+    </div>
+    <div class="panel">
+      <h2>客户端下载</h2>
+      <ul class="downloads">
+        <li><a href="downloads/lzc-mesh-macos.zip">macOS（Apple Silicon / Intel）</a></li>
+        <li><a href="downloads/lzc-mesh-windows.zip">Windows 10/11 x64</a></li>
+        <li><a href="downloads/lzc-mesh-linux-x86_64.tar.gz">Linux x86_64（wlroots / Hyprland）</a></li>
+      </ul>
+      <p class="note">客户端通过本机的懒猫微服客户端接入网络，使用前请先登录懒猫微服客户端。</p>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

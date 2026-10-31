@@ -1,0 +1,7 @@
+# Build output
+target/
+build/
+dist/
+lzc-mesh-lpk/content/
+*.lpk
+.DS_Store

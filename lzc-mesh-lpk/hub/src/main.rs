@@ -1,0 +1,119 @@
+//! LZC Mesh hub. Runs inside the LPK, behind lzc-ingress which authenticates
+//! every request and injects `X-HC-User-ID`. Native clients reach it through
+//! the LazyCat network using the session cookie of the local LazyCat client.
+
+mod hub;
+mod layout;
+mod protocol;
+mod store;
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tower_http::services::ServeDir;
+
+use hub::Hub;
+use protocol::{ClientMsg, HubMsg};
+use store::Store;
+
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone)]
+struct App {
+    hub: Hub,
+}
+
+fn user_of(headers: &HeaderMap) -> Option<String> {
+    let user = headers.get("x-hc-user-id")?.to_str().ok()?.trim();
+    (!user.is_empty() && user.len() <= 128).then(|| user.to_string())
+}
+
+async fn whoami(headers: HeaderMap) -> Response {
+    match user_of(&headers) {
+        Some(user) => Json(serde_json::json!({ "user": user, "version": env!("CARGO_PKG_VERSION") })).into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+async fn ws(State(app): State<App>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    let Some(user) = user_of(&headers) else {
+        return (StatusCode::UNAUTHORIZED, "login required").into_response();
+    };
+    upgrade.max_message_size(64 * 1024).on_upgrade(move |socket| session(app, user, socket))
+}
+
+async fn session(app: App, user: String, socket: WebSocket) {
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    let room = app.hub.room(&user).await;
+    let (tx, mut rx) = mpsc::unbounded_channel::<HubMsg>();
+    let (mut sink, mut stream) = socket.split();
+    room.lock().await.attach(conn, tx);
+    tracing::info!(user, conn, "connected");
+
+    let writer = tokio::spawn(async move {
+        let mut ping = tokio::time::interval(Duration::from_secs(20));
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    let Some(msg) = msg else { break };
+                    let text = serde_json::to_string(&msg).unwrap_or_default();
+                    if sink.send(Message::Text(text.into())).await.is_err() { break }
+                }
+                _ = ping.tick() => {
+                    if sink.send(Message::Ping(Default::default())).await.is_err() { break }
+                }
+            }
+        }
+    });
+
+    // A client that stops talking for 60s is treated as gone so it cannot keep control.
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
+        match frame {
+            Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(msg) => room.lock().await.handle(conn, msg),
+                Err(err) => tracing::debug!(conn, "bad frame: {err}"),
+            },
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    room.lock().await.detach(conn);
+    writer.abort();
+    tracing::info!(user, conn, "disconnected");
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
+        .init();
+    let data = PathBuf::from(std::env::var("LZC_MESH_DATA").unwrap_or_else(|_| "/lzcapp/var/layouts".into()));
+    let web = PathBuf::from(std::env::var("LZC_MESH_WEB").unwrap_or_else(|_| "/lzcapp/pkg/content/web".into()));
+    let addr: SocketAddr = std::env::var("LZC_MESH_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into()).parse().expect("listen address");
+
+    let app = App { hub: Hub::new(Store::new(data)) };
+    let router = Router::new()
+        .route("/api/whoami", get(whoami))
+        .route("/api/ws", get(ws))
+        .route("/api/health", get(|| async { "ok" }))
+        .fallback_service(ServeDir::new(web).append_index_html_on_directories(true))
+        .with_state(app);
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    tracing::info!("lzc-mesh hub listening on {addr}");
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+        .expect("serve");
+}

@@ -1,0 +1,10 @@
+application:
+  subdomain: lzc-mesh
+  health_check:
+    disable: true
+  routes:
+    - /=exec://8080,/lzcapp/pkg/content/lzc-mesh-hub
+  environment:
+    LZC_MESH_LISTEN: "0.0.0.0:8080"
+    LZC_MESH_DATA: /lzcapp/var/layouts
+    LZC_MESH_WEB: /lzcapp/pkg/content/web

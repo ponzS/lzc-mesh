@@ -1,0 +1,16 @@
+package: cloud.lazycat.app.lzc-mesh
+version: 0.1.0
+name: LZC Mesh
+description: Share one keyboard and mouse across your Mac, Windows and Linux computers over the LazyCat network
+author: ponzs
+admin_only: false
+min_os_version: v1.5.0
+permissions:
+  required: []
+locales:
+  zh:
+    name: LZC Mesh
+    description: 通过懒猫网络在 Mac、Windows、Linux 之间共享一套键盘和触控板
+  en:
+    name: LZC Mesh
+    description: Share one keyboard and mouse across your computers over the LazyCat network
