@@ -18,6 +18,19 @@
 - 光标推到有相邻屏幕的边缘时，本机光标被锁住隐藏，移动量和按键转发给中枢，中枢按布局把光标交给相邻设备。按键在线路上统一使用 Linux evdev 键码。
 - 控制其他设备时按 Ctrl+Alt+Esc（Mac 上是 Ctrl+Option+Esc）立即收回。
 
+## 下载
+
+安装包在 [GitHub Releases](https://github.com/ponzS/lzc-mesh/releases)，每个版本包含：
+
+| 文件 | 内容 |
+| --- | --- |
+| `cloud.lazycat.app.lzc-mesh-v<版本>.lpk` | 懒猫微服应用，拖到微服启动器页面即可安装 |
+| `lzc-mesh-macos.zip` | macOS 12+，Apple Silicon / Intel 通用 |
+| `lzc-mesh-windows.zip` | Windows 10/11 x64，解压后运行 `install.ps1` |
+| `lzc-mesh-linux-x86_64.tar.gz` | Linux x86_64，解压后运行 `install.sh` |
+
+LPK 管理页面上的下载链接指向对应版本的 Release。
+
 ## 构建
 
 ```sh

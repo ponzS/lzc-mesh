@@ -30,7 +30,7 @@ build:
 
 dist: build/lzc-mesh
 	rm -rf build/dist && mkdir -p build/dist/lzc-mesh
-	cp build/lzc-mesh lzc-mesh.desktop install.sh build/dist/lzc-mesh/
+	cp build/lzc-mesh lzc-mesh.desktop lzc-mesh.png install.sh build/dist/lzc-mesh/
 	tar -C build/dist -czf ../dist/lzc-mesh-linux-x86_64.tar.gz lzc-mesh
 
 clean:

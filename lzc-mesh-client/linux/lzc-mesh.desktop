@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LZC Mesh
+Comment=Share one keyboard and mouse across your computers over the LazyCat network
+Exec=lzc-mesh
+Icon=lzc-mesh
+Terminal=false
+Categories=Utility;
+StartupWMClass=cloud.lazycat.lzcmesh

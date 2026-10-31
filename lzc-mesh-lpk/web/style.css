@@ -37,3 +37,4 @@ h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
 .row { display:flex; gap:8px; align-items:flex-start; cursor:pointer; }
 .downloads { margin:0; padding-left:18px; }
 .downloads a { color:var(--text); }
+.note a { color:var(--muted); }
