@@ -54,10 +54,13 @@ function computeView() {
   if (!ds.length) return
   const minX = Math.min(...ds.map(d => d.x)), minY = Math.min(...ds.map(d => d.y))
   const maxX = Math.max(...ds.map(d => d.x + d.w)), maxY = Math.max(...ds.map(d => d.y + d.h))
-  const pad = 48
+  const narrow = stage.clientWidth < 600
+  const pad = narrow ? 16 : 48
   const W = stage.clientWidth - pad * 2, H = stage.clientHeight - pad * 2
-  // Leave room so a screen can be dragged next to any side of the group.
-  const scale = Math.min(W / ((maxX - minX) * 1.6), H / ((maxY - minY) * 1.6), 0.25)
+  // Leave room so a screen can be dragged next to any side of the group;
+  // on a phone the width is the constraint, so use almost all of it.
+  const room = narrow ? 1.15 : 1.6
+  const scale = Math.min(W / ((maxX - minX) * room), H / ((maxY - minY) * room), 0.25)
   view.scale = scale
   view.ox = pad + (W - (maxX - minX) * scale) / 2 - minX * scale
   view.oy = pad + (H - (maxY - minY) * scale) / 2 - minY * scale
@@ -90,6 +93,8 @@ function render() {
     el.style.top = `${view.oy + d.y * view.scale}px`
     el.style.width = `${d.w * view.scale}px`
     el.style.height = `${d.h * view.scale}px`
+    // Small screens show only what fits: name, then the platform line.
+    el.classList.toggle("compact", d.w * view.scale < 120 || d.h * view.scale < 64)
   }
   for (const el of [...stage.querySelectorAll(".screen")]) if (!seen.has(el.dataset.id)) el.remove()
   renderList()
@@ -146,6 +151,7 @@ function endDrag() {
 swap.addEventListener("change", () => send({ t: "settings", swap_cmd_ctrl: swap.checked }))
 clipboardToggle.addEventListener("change", () => send({ t: "settings", clipboard: clipboardToggle.checked }))
 window.addEventListener("resize", () => drag || render())
+new ResizeObserver(() => drag || render()).observe(stage)
 setInterval(() => send({ t: "ping" }), 20000)
 connect()
 initFiles()

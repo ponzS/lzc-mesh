@@ -3,6 +3,7 @@
   :root { --bg:#111; --panel:#1b1b1b; --line:#2e2e2e; --text:#eee; --muted:#8a8a8a; --screen:#232323; --active:#eee; }
 }
 * { box-sizing: border-box; }
+input[type=checkbox] { accent-color: var(--text); }
 body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--text); }
 header { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; border-bottom:1px solid var(--line); background:var(--panel); }
 .brand { font-weight:600; letter-spacing:.02em; }
@@ -10,7 +11,8 @@ header { display:flex; align-items:center; justify-content:space-between; paddin
 .dot { width:8px; height:8px; border-radius:50%; background:#bbb; }
 .dot.ok { background:var(--text); }
 main { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; padding:16px 24px; max-width:1400px; margin:0 auto; }
-@media (max-width: 900px) { main { grid-template-columns:1fr; } }
+@media (max-width: 900px) { main { grid-template-columns:minmax(0,1fr); } }
+.panel, .side { min-width:0; }
 .files-panel { grid-column:1; }
 @media (min-width: 901px) { .side { grid-row:1 / span 2; grid-column:2; } }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
@@ -30,6 +32,10 @@ h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
 .screen .name { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 .screen .meta { color:var(--muted); font-size:11px; white-space:nowrap; }
 .screen .badge { position:absolute; top:6px; right:8px; font-size:10px; color:var(--muted); }
+.screen.compact { padding:2px 4px; }
+.screen.compact .name { font-size:11px; }
+.screen.compact .meta { font-size:9px; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+.screen.compact .badge { top:2px; right:4px; font-size:9px; }
 .devices { list-style:none; margin:0; padding:0; }
 .devices li { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-top:1px solid var(--line); gap:8px; }
 .devices li:first-child { border-top:0; }
@@ -70,3 +76,17 @@ h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
 .upload .bar i { display:block; height:100%; width:0; background:var(--text); }
 .upload .pct { flex:0 0 48px; text-align:right; color:var(--muted); }
 .upload.failed .pct { color:var(--text); font-weight:600; }
+@media (max-width: 600px) {
+  header { padding:12px 16px; }
+  main { padding:12px; gap:12px; }
+  .panel { padding:14px; }
+  .stage { width:100%; height:auto; aspect-ratio:1 / 1; min-height:0; }
+  .files th:nth-child(3), .files td:nth-child(3), .files th:nth-child(4), .files td:nth-child(4) { display:none; }
+  .upload-btn { margin-left:0; }
+  .panel-head { flex-direction:column; align-items:flex-start; gap:4px; margin-bottom:8px; }
+  .panel-head h2 { margin:0; }
+  .files { table-layout:fixed; }
+  .files th:nth-child(2), .files td:nth-child(2) { width:72px; }
+  .files th:nth-child(5), .files td:nth-child(5) { width:104px; }
+  .files button { margin-left:2px; padding:2px 6px; }
+}
