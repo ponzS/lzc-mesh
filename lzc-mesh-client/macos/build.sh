@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds "LZC Mesh.app" (universal arm64 + x86_64) and dist/lzc-mesh-macos.zip.
+# Builds "LZC Mesh.app" (universal arm64 + x86_64) and dist/lzc-mesh-macos.dmg
+# (drag-to-Applications disk image).
 # Signs with the first available "Apple Development" identity so macOS keeps the
 # Accessibility / Input Monitoring grants across rebuilds; falls back to ad-hoc.
 set -eu
@@ -17,4 +18,10 @@ IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Developm
 codesign --force --deep --sign "${IDENTITY:--}" "$APP"
 echo "signed with: ${IDENTITY:-ad-hoc}"
 mkdir -p ../dist
-(cd build && ditto -c -k --keepParent "LZC Mesh.app" ../../dist/lzc-mesh-macos.zip)
+rm -rf build/dmg ../dist/lzc-mesh-macos.dmg
+mkdir -p build/dmg
+ditto "$APP" "build/dmg/LZC Mesh.app"
+ln -s /Applications build/dmg/Applications
+hdiutil create -quiet -volname "LZC Mesh" -srcfolder build/dmg -fs HFS+ -format UDZO -ov ../dist/lzc-mesh-macos.dmg
+codesign --force --sign "${IDENTITY:--}" ../dist/lzc-mesh-macos.dmg
+hdiutil verify -quiet ../dist/lzc-mesh-macos.dmg

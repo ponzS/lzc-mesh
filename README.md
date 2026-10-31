@@ -25,7 +25,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | `cloud.lazycat.app.lzc-mesh-v<版本>.lpk` | 懒猫微服应用，拖到微服启动器页面即可安装 |
-| `lzc-mesh-macos.zip` | macOS 12+，Apple Silicon / Intel 通用 |
+| `lzc-mesh-macos.dmg` | macOS 12+，Apple Silicon / Intel 通用，打开后把 LZC Mesh 拖到“应用程序” |
 | `lzc-mesh-windows.zip` | Windows 10/11 x64，解压后运行 `install.ps1` |
 | `lzc-mesh-linux-x86_64.tar.gz` | Linux x86_64，解压后运行 `install.sh` |
 
@@ -47,7 +47,7 @@ cd lzc-mesh-client/windows && ./build.sh
 cd lzc-mesh-client/linux && make
 ```
 
-产物输出到 `lzc-mesh-lpk/dist/` 和 `lzc-mesh-client/dist/`。
+产物输出到 `lzc-mesh-lpk/dist/` 和 `lzc-mesh-client/dist/`（macOS 为 `lzc-mesh-macos.dmg`）。
 
 ## 权限
 
