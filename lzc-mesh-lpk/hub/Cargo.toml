@@ -3,6 +3,7 @@ name = "lzc-mesh-hub"
 version = "0.1.0"
 edition = "2021"
 description = "LZC Mesh hub: layout store and input relay for shared keyboard/mouse"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }

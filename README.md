@@ -45,3 +45,11 @@ cd lzc-mesh-client/linux && make
 ## 状态
 
 macOS ↔ Windows 已真机验证。Linux 客户端已编译并能连上中枢，输入注入尚未真机验证。
+
+## 许可证
+
+本项目代码使用 PolyForm Noncommercial License 1.0.0 授权，SPDX 标识为 `PolyForm-Noncommercial-1.0.0`。
+
+这意味着本项目源码允许在非商业场景下使用、复制、修改和分发，但不能用于商业目的。禁止将本项目用于商业产品、商业服务、付费交付、商业集成或其他以商业收益为目的的场景。
+
+完整许可证条款见 [LICENSE](./LICENSE)。`lzc-mesh-client/linux/protocols/` 下的 Wayland 协议文件保留其原始许可证声明。
