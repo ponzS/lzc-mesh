@@ -1,5 +1,7 @@
-// LZC Mesh for Windows: Win32 window with status panel, layout editor and log.
+// 懒猫设备接力 (LZC Mesh) for Windows: Win32 window with status panel, layout editor, shared files and log.
 #include "app.h"
+#include "clipboard.h"
+#include "files.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -28,7 +30,7 @@ long long lastMoveLog = 0, lastKeyLog = 0;
 
 enum { ID_RETRY = 100, ID_OPEN, ID_COPY, ID_QUIT, ID_BOX_APPLY, ID_SWAP, ID_ELEVATE, ID_TIMER = 1, ID_FG_TIMER = 2 };
 
-const wchar_t *labels[S_COUNT] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"LZC Mesh 应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕"};
+const wchar_t *labels[S_COUNT] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板"};
 
 int S(int v) { return MulDiv(v, (int)dpi, 96); }
 
@@ -85,6 +87,12 @@ void updateControlStatus() {
     else setStatus(S_CONTROL, L_UNKNOWN, L"空闲：把光标移出屏幕边缘即可控制相邻设备");
 }
 
+void updateClipboardStatus() {
+    if (!g.hubConnected) setStatus(S_CLIPBOARD, L_UNKNOWN, L"等待连接中枢");
+    else if (g.clipboardEnabled) setStatus(S_CLIPBOARD, L_OK, L"已开启：复制的文本会同步到其他在线设备");
+    else setStatus(S_CLIPBOARD, L_UNKNOWN, L"未开启（在管理页面“设置”中开启）");
+}
+
 void updateScreenStatus() {
     input::refreshScreen();
     setStatus(S_SCREEN, L_OK, fmt(L"%d×%d（%d 个显示器，缩放 %d%%，逻辑像素 %.0f×%.0f）", g.screenW, g.screenH, GetSystemMetrics(SM_CMONITORS),
@@ -130,7 +138,7 @@ void onProbe(Probe *p) {
         hubws::connect(L"lzc-mesh." + widen(g.boxDomain), widen(g.cookie));
     }
     if (!ready && g.hubConnected) hubws::close();
-    if (!ready) setStatus(S_HUB, L_UNKNOWN, L"等待 LZC Mesh 应用可用");
+    if (!ready) setStatus(S_HUB, L_UNKNOWN, L"等待懒猫设备接力应用可用");
     EnableWindow(hOpenBtn, !g.boxDomain.empty());
     delete p;
 }
@@ -154,6 +162,10 @@ void onHubText(const std::string &text) {
         g.activeSource = o["active"]["source"].str();
         g.activeTarget = o["active"]["target"].str();
         g.swapCmdCtrl = o["settings"]["swap_cmd_ctrl"].boolean(true);
+        bool clip = o["settings"]["clipboard"].boolean(false);
+        if (clip != g.clipboardEnabled) logLine(clip ? L"共享剪贴板已开启" : L"共享剪贴板已关闭");
+        g.clipboardEnabled = clip;
+        updateClipboardStatus();
         setStatus(S_HUB, L_OK, fmt(L"已连接 · 用户 %ls · %d 台设备在线", widen(g.hubUser).c_str(), online));
         updateControlStatus();
         devicesChanged();
@@ -195,6 +207,12 @@ void onHubText(const std::string &text) {
         bool down = o["down"].boolean();
         logLine(fmt(L"收到按键 code=%u %ls", code, down ? L"按下" : L"抬起"));
         input::key(code, down);
+    } else if (t == "clipboard") {
+        clipboard::set(o["text"].str(), o["from"].str());
+    } else if (t == "files") {
+        std::vector<SharedFile> list;
+        for (auto &f : o["files"].a) list.push_back(SharedFile{f["name"].str(), f["uploader"].str(), (long long)f["size"].num(), f["modified"].num()});
+        files::update(list);
     } else if (t == "error") {
         logLine(L"服务端错误：" + widen(o["message"].str()));
     }
@@ -205,10 +223,10 @@ void onHubClosed(int httpStatus, const std::wstring &why) {
     g.hubConnected = false;
     input::setHubConnected(false);
     if (was) {
-        logLine(L"与 LZC Mesh 服务的连接已断开：" + why);
+        logLine(L"与设备接力中枢的连接已断开：" + why);
         setStatus(S_HUB, L_WARN, L"连接已断开，稍后自动重连");
     } else {
-        logLine(L"连接 LZC Mesh 服务失败：" + why);
+        logLine(L"连接设备接力中枢失败：" + why);
         setStatus(S_HUB, L_ERROR, L"连接失败：" + why);
         if (httpStatus == 401 || httpStatus == 302 || httpStatus == 307) g.cookie.clear(), serviceCheckedAt = 0;
     }
@@ -217,6 +235,7 @@ void onHubClosed(int httpStatus, const std::wstring &why) {
     g.captured = g.controlled = false;
     input::setEdges(false, false, false, false);
     updateControlStatus();
+    updateClipboardStatus();
 }
 
 // Windows blocks injected input into windows of elevated (admin) processes
@@ -266,7 +285,7 @@ void relaunchElevated() {
 }
 
 void copyDiagnostics() {
-    std::wstring s = L"LZC Mesh Windows " LZC_MESH_VERSION L"\r\n设备 ID: " + widen(g.deviceId) + L"\r\n微服: " + widen(g.boxDomain) + L"\r\n";
+    std::wstring s = L"懒猫设备接力 Windows " LZC_MESH_VERSION L"\r\n设备 ID: " + widen(g.deviceId) + L"\r\n微服: " + widen(g.boxDomain) + L"\r\n";
     for (int i = 0; i < S_COUNT; i++) s += std::wstring(labels[i]) + L": " + g.status[i].text + L"\r\n";
     int len = GetWindowTextLengthW(hLog);
     std::wstring log(len + 1, L'\0');
@@ -346,7 +365,7 @@ void layoutPaint(HWND h) {
     if (g.devices.empty()) {
         SelectObject(dc, font);
         SetTextColor(dc, RGB(128, 128, 128));
-        DrawTextW(dc, g.hubConnected ? L"暂无设备" : L"连接 LZC Mesh 服务后显示屏幕布局", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, g.hubConnected ? L"暂无设备" : L"连接设备接力中枢后显示屏幕布局", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
         if (L.drag < 0) layoutCompute(rc);
         for (int i = 0; i < (int)g.devices.size(); i++) {
@@ -436,7 +455,7 @@ HWND buttonCtl(HWND parent, const wchar_t *text, int id, DWORD style = BS_PUSHBU
     return h;
 }
 
-HWND hKeyLabel[S_COUNT], hTitles[3], hHint, hBoxLabel, hButtons[6];
+HWND hKeyLabel[S_COUNT], hTitles[4], hHint, hBoxLabel, hButtons[6], hFileBtns[3];
 RECT dotRects[S_COUNT];
 
 void makeFonts() {
@@ -478,11 +497,18 @@ void layoutControls(HWND h) {
     MoveWindow(hHint, x, y, w, S(18), TRUE);
     y += S(22);
     int logH = S(130);
-    int layoutH = std::max(S(160), (int)rc.bottom - y - S(30) - S(30) - logH - pad);
+    int layoutH = std::max(S(160), (int)rc.bottom - y - S(30) - S(30) - logH - pad - S(172));
     MoveWindow(hLayout, x, y, w, layoutH, TRUE);
     y += layoutH + S(6);
     MoveWindow(hSwap, x, y, w, S(22), TRUE);
     y += S(30);
+    MoveWindow(hTitles[3], x, y, S(120), S(20), TRUE);
+    int fbx = x + w;
+    const int fw[] = {70, 70, 90};
+    for (int i = 2; i >= 0; i--) { fbx -= S(fw[i]); MoveWindow(hFileBtns[i], fbx, y - S(4), S(fw[i]), S(26), TRUE); fbx -= S(6); }
+    y += S(26);
+    files::layout(x, y, w, S(140), S(22));
+    y += S(146);
     MoveWindow(hTitles[2], x, y, w, S(20), TRUE);
     y += S(24);
     MoveWindow(hLog, x, y, w, rc.bottom - y - pad, TRUE);
@@ -494,7 +520,8 @@ void applyFonts() {
     for (HWND c : hKeyLabel) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
     for (HWND c : hTitles) SendMessageW(c, WM_SETFONT, (WPARAM)fontBold, TRUE);
     for (HWND c : hButtons) if (c) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    for (HWND c : {hHint, hBoxLabel}) SendMessageW(c, WM_SETFONT, (WPARAM)fontSmall, TRUE);
+    for (HWND c : {hHint, hBoxLabel, files::statusLabel()}) SendMessageW(c, WM_SETFONT, (WPARAM)fontSmall, TRUE);
+    for (HWND c : hFileBtns) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
     for (HWND c : {hBox, hSwap, hPermBtn, hOpenBtn}) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
     SendMessageW(hLog, WM_SETFONT, (WPARAM)fontMono, TRUE);
 }
@@ -527,6 +554,11 @@ void createControls(HWND h) {
     hLayout = CreateWindowExW(0, wc.lpszClassName, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, h, nullptr, nullptr, nullptr);
     hSwap = buttonCtl(h, L"Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl", ID_SWAP, BS_AUTOCHECKBOX);
     SendMessageW(hSwap, BM_SETCHECK, BST_CHECKED, 0);
+    hTitles[3] = staticLabel(h, L"文件共享", fontBold);
+    hFileBtns[0] = buttonCtl(h, L"下载", ID_FILES_DOWNLOAD);
+    hFileBtns[1] = buttonCtl(h, L"删除", ID_FILES_DELETE);
+    hFileBtns[2] = buttonCtl(h, L"上传文件", ID_FILES_UPLOAD);
+    files::create(h, font);
     hTitles[2] = staticLabel(h, L"事件日志", fontBold);
     hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, h, nullptr, nullptr, nullptr);
     SendMessageW(hLog, EM_SETLIMITTEXT, 0, 0);
@@ -544,6 +576,8 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         createControls(h);
         SetTimer(h, ID_TIMER, 3000, nullptr);
         SetTimer(h, ID_FG_TIMER, 1000, nullptr);
+        clipboard::start(h);
+        updateClipboardStatus();
         return 0;
     case WM_DPICHANGED: {
         dpi = HIWORD(w);
@@ -561,7 +595,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SetBkMode(dc, TRANSPARENT);
         int id = GetDlgCtrlID(c);
         COLORREF col = RGB(17, 17, 17);
-        if (c == hHint || c == hBoxLabel) col = RGB(119, 119, 119);
+        if (c == hHint || c == hBoxLabel || c == files::statusLabel()) col = RGB(119, 119, 119);
         for (int i = 0; i < S_COUNT; i++) if (c == hKeyLabel[i]) col = RGB(85, 85, 85);
         if (id >= 200 && id < 200 + S_COUNT && g.status[id - 200].level == L_ERROR) col = RGB(0, 0, 0);
         if (c == hLog) { SetBkColor(dc, RGB(250, 250, 250)); SetTextColor(dc, RGB(51, 51, 51)); static HBRUSH lb = CreateSolidBrush(RGB(250, 250, 250)); return (LRESULT)lb; }
@@ -608,17 +642,40 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_QUIT: DestroyWindow(h); break;
         case ID_BOX_APPLY: applyBox(); break;
         case ID_ELEVATE: relaunchElevated(); break;
+        case ID_FILES_UPLOAD: files::pickAndUpload(); break;
+        case ID_FILES_DOWNLOAD: files::downloadSelected(); break;
+        case ID_FILES_DELETE: files::deleteSelected(); break;
         case ID_SWAP:
             if (!updatingSwap) hubws::send(JsonOut().s("t", "settings").b("swap_cmd_ctrl", SendMessageW(hSwap, BM_GETCHECK, 0, 0) == BST_CHECKED).str());
             break;
         }
         return 0;
     case WM_APP_PROBE: onProbe((Probe *)l); return 0;
+    case WM_CLIPBOARDUPDATE: clipboard::onUpdate(); return 0;
+    case WM_DROPFILES: files::onDrop((HDROP)w); return 0;
+    case WM_NOTIFY: {
+        NMHDR *n = (NMHDR *)l;
+        if (n->idFrom == ID_FILES_LIST && n->code == NM_DBLCLK) files::downloadSelected();
+        return 0;
+    }
+    case WM_APP_FILES_STATUS: {
+        std::wstring *s = (std::wstring *)l;
+        files::setStatusText(*s);
+        logLine(*s);
+        delete s;
+        return 0;
+    }
+    case WM_APP_FILES_REVEAL: {
+        std::wstring *p = (std::wstring *)l;
+        ShellExecuteW(h, L"open", L"explorer.exe", (L"/select,\"" + *p + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+        delete p;
+        return 0;
+    }
     case WM_APP_HUB_OPEN:
         g.hubConnected = true;
         input::setHubConnected(true);
         setStatus(S_HUB, L_OK, L"已连接");
-        logLine(L"已连接 LZC Mesh 服务");
+        logLine(L"已连接设备接力中枢");
         sendHello();
         return 0;
     case WM_APP_HUB_TEXT: {
@@ -682,7 +739,7 @@ std::wstring fmt(const wchar_t *f, ...) {
     return buf;
 }
 const char *statusName(int key) {
-    static const char *n[] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen"};
+    static const char *n[] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard"};
     return n[key];
 }
 
@@ -756,9 +813,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     RegisterClassW(&wc);
     UINT sysDpi = GetDpiForSystem();
-    HWND h = CreateWindowExW(0, wc.lpszClassName, L"LZC Mesh", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(900, sysDpi, 96),
-                             MulDiv(860, sysDpi, 96), nullptr, nullptr, inst, nullptr);
-    logLine(L"LZC Mesh Windows " LZC_MESH_VERSION L" 启动，设备 ID " + widen(g.deviceId) + (input::isElevated() ? L"（管理员）" : L""));
+    HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(900, sysDpi, 96),
+                             MulDiv(1000, sysDpi, 96), nullptr, nullptr, inst, nullptr);
+    logLine(L"懒猫设备接力 Windows " LZC_MESH_VERSION L" 启动，设备 ID " + widen(g.deviceId) + (input::isElevated() ? L"（管理员）" : L""));
     input::start();
     updateScreenStatus();
     ShowWindow(h, show);

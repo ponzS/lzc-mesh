@@ -1,4 +1,4 @@
-// WebSocket connection to the LZC Mesh hub (URLSessionWebSocketTask).
+// WebSocket connection to the 懒猫设备接力 hub (URLSessionWebSocketTask).
 import Foundation
 
 final class Hub: NSObject, URLSessionWebSocketDelegate {
@@ -8,6 +8,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     private var pingTimer: Timer?
     private var lastMoveLog = Date.distantPast
     var input: MacInput!
+    var clipboard: Clipboard!
     var onCookieRejected: (() -> Void)?
 
     override init() {
@@ -41,7 +42,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         let s = AppState.shared
         s.hubConnected = true
         s.set(.hub, .ok, "已连接")
-        s.log("已连接 LZC Mesh 服务")
+        s.log("已连接设备接力中枢")
         sendHello()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.send(["t": "ping"]) }
     }
@@ -64,10 +65,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         pingTimer?.invalidate(); pingTimer = nil
         s.hubConnected = false
         if wasConnected {
-            s.log("与 LZC Mesh 服务的连接已断开：\(why)")
+            s.log("与设备接力中枢的连接已断开：\(why)")
             s.set(.hub, .warn, "连接已断开，稍后自动重连")
         } else {
-            s.log("连接 LZC Mesh 服务失败：\(why)\(status.map { "（HTTP \($0)）" } ?? "")")
+            s.log("连接设备接力中枢失败：\(why)\(status.map { "（HTTP \($0)）" } ?? "")")
             s.set(.hub, .error, "连接失败：\(why)")
             if status == 401 || status == 307 || status == 302 { onCookieRejected?() }
         }
@@ -76,6 +77,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         s.captured = false; s.controlled = false
         input.setEdges(left: false, right: false, up: false, down: false)
         s.updateControlStatus()
+        s.updateClipboardStatus()
     }
 
     private func receive(_ t: URLSessionWebSocketTask) {
@@ -120,7 +122,12 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             let active = o["active"] as? [String: Any]
             s.activeSource = active?["source"] as? String
             s.activeTarget = active?["target"] as? String
-            s.swapCmdCtrl = (o["settings"] as? [String: Any])?["swap_cmd_ctrl"] as? Bool ?? true
+            let settings = o["settings"] as? [String: Any]
+            s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
+            let clip = settings?["clipboard"] as? Bool ?? false
+            if clip != s.clipboardEnabled { s.log("共享剪贴板已\(clip ? "开启" : "关闭")") }
+            s.clipboardEnabled = clip
+            s.updateClipboardStatus()
             s.set(.hub, .ok, "已连接 · 用户 \(s.hubUser) · \(s.devices.filter { $0.online }.count) 台设备在线")
             s.updateControlStatus()
             s.onDevices?()
@@ -162,6 +169,14 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             let code = UInt32(o["code"] as? Int ?? 0), down = o["down"] as? Bool ?? false
             s.log("收到按键 code=\(code) \(down ? "按下" : "抬起")")
             input.key(code, down: down)
+        case "clipboard":
+            clipboard.set(o["text"] as? String ?? "", from: o["from"] as? String ?? "")
+        case "files":
+            s.files = (o["files"] as? [[String: Any]] ?? []).map {
+                SharedFile(name: $0["name"] as? String ?? "", size: ($0["size"] as? NSNumber)?.int64Value ?? 0,
+                           modified: $0["modified"] as? Double ?? 0, uploader: $0["uploader"] as? String ?? "")
+            }
+            s.onFiles?()
         case "error":
             s.log("服务端错误：\(o["message"] as? String ?? "")")
         default: break

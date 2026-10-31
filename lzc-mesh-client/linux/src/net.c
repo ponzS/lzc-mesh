@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "app.h"
+#include "clipboard.h"
+#include "files.h"
 #include "lzc.h"
 #include "net.h"
 #include "wl_input.h"
@@ -62,6 +64,14 @@ void net_send_release(void) { done(msg("release")); }
 void net_send_layout(const char *id, double x, double y) { JsonBuilder *b = msg("layout"); str(b, "id", id); num(b, "x", x); num(b, "y", y); done(b); }
 void net_send_forget(const char *id) { JsonBuilder *b = msg("forget"); str(b, "id", id); done(b); }
 void net_send_settings(bool swap) { JsonBuilder *b = msg("settings"); boolean(b, "swap_cmd_ctrl", swap); done(b); }
+void net_send_clipboard(const char *text) { JsonBuilder *b = msg("clipboard"); str(b, "text", text); done(b); }
+
+static void update_clipboard_status(void) {
+    if (!clipboard_available()) app_set_status(S_CLIPBOARD, ST_WARN, "当前合成器不支持 wlr-data-control，无法共享剪贴板");
+    else if (!app.hub_connected) app_set_status(S_CLIPBOARD, ST_UNKNOWN, "等待连接中枢");
+    else if (app.clipboard_enabled) app_set_status(S_CLIPBOARD, ST_OK, "已开启：复制的文本会同步到其他在线设备");
+    else app_set_status(S_CLIPBOARD, ST_UNKNOWN, "未开启（在管理页面“设置”中开启）");
+}
 
 static void mesh_device_free(gpointer p) {
     MeshDevice *d = p;
@@ -110,8 +120,14 @@ static void on_state(JsonObject *o) {
         app.active_target = g_strdup(json_object_get_string_member_with_default(a, "target", ""));
     }
     JsonNode *settings = json_object_get_member(o, "settings");
-    if (settings && JSON_NODE_HOLDS_OBJECT(settings))
-        app.swap_cmd_ctrl = json_object_get_boolean_member_with_default(json_node_get_object(settings), "swap_cmd_ctrl", true);
+    if (settings && JSON_NODE_HOLDS_OBJECT(settings)) {
+        JsonObject *so = json_node_get_object(settings);
+        app.swap_cmd_ctrl = json_object_get_boolean_member_with_default(so, "swap_cmd_ctrl", true);
+        bool clip = json_object_get_boolean_member_with_default(so, "clipboard", false);
+        if (clip != app.clipboard_enabled) app_log("共享剪贴板已%s", clip ? "开启" : "关闭");
+        app.clipboard_enabled = clip;
+    }
+    update_clipboard_status();
     guint online = 0;
     for (guint i = 0; i < app.devices->len; i++) online += ((MeshDevice *)g_ptr_array_index(app.devices, i))->online;
     app_set_status(S_HUB, ST_OK, "已连接 · 用户 %s · %u 台设备在线", app.hub_user ? app.hub_user : "?", online);
@@ -180,6 +196,11 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
         bool down = json_object_get_boolean_member_with_default(o, "down", false);
         app_log("收到按键 code=%u %s", code, down ? "按下" : "抬起");
         wl_input_key(code, down);
+    } else if (!strcmp(t, "files")) {
+        files_update(json_object_get_array_member(o, "files"));
+    } else if (!strcmp(t, "clipboard")) {
+        if (app.clipboard_enabled)
+            clipboard_set(json_object_get_string_member_with_default(o, "text", ""), json_object_get_string_member_with_default(o, "from", ""));
     } else if (!strcmp(t, "error")) {
         app_log("服务端错误：%s", json_object_get_string_member_with_default(o, "message", ""));
     }
@@ -192,10 +213,11 @@ static void reset_roles(void) {
     app.captured = app.controlled = false;
     wl_input_set_edges(false, false, false, false);
     update_control_status();
+    update_clipboard_status();
 }
 
 static void on_closed(SoupWebsocketConnection *c, gpointer u) {
-    app_log("与 LZC Mesh 服务的连接已断开（code %u）", soup_websocket_connection_get_close_code(c));
+    app_log("与设备接力中枢的连接已断开（code %u）", soup_websocket_connection_get_close_code(c));
     if (ws == c) g_clear_object(&ws);
     app.hub_connected = false;
     if (ping_timer) g_source_remove(ping_timer), ping_timer = 0;
@@ -214,7 +236,7 @@ static void on_connected(GObject *src, GAsyncResult *res, gpointer u) {
     connecting = false;
     if (!conn) {
         app_set_status(S_HUB, ST_ERROR, "连接失败：%s", err->message);
-        app_log("连接 LZC Mesh 服务失败：%s", err->message);
+        app_log("连接设备接力中枢失败：%s", err->message);
         if (g_error_matches(err, SOUP_WEBSOCKET_ERROR, SOUP_WEBSOCKET_ERROR_NOT_WEBSOCKET)) lzc_invalidate_cookie();
         g_error_free(err);
         return;
@@ -226,7 +248,7 @@ static void on_connected(GObject *src, GAsyncResult *res, gpointer u) {
     g_signal_connect(ws, "closed", G_CALLBACK(on_closed), NULL);
     app.hub_connected = true;
     app_set_status(S_HUB, ST_OK, "已连接");
-    app_log("已连接 LZC Mesh 服务");
+    app_log("已连接设备接力中枢");
     net_send_hello();
     ping_timer = g_timeout_add_seconds(20, ping, NULL);
 }

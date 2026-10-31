@@ -9,10 +9,11 @@ const list = document.getElementById("devices")
 const statusText = document.getElementById("status")
 const dot = document.getElementById("dot")
 const swap = document.getElementById("swap")
+const clipboardToggle = document.getElementById("clipboard")
 
 const PLATFORM = { macos: "macOS", windows: "Windows", linux: "Linux" }
 let ws = null
-let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true } }
+let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true, clipboard: false } }
 let view = { scale: 1, ox: 0, oy: 0 }
 let drag = null
 
@@ -35,6 +36,7 @@ function connect() {
       state = msg
       if (!drag) render()
     }
+    if (msg.t === "files") renderFiles(msg.files)
     if (msg.t === "error") alert(msg.message)
   }
   ws.onclose = () => {
@@ -64,6 +66,7 @@ function computeView() {
 function render() {
   computeView()
   swap.checked = !!state.settings?.swap_cmd_ctrl
+  clipboardToggle.checked = !!state.settings?.clipboard
   empty.style.display = state.devices.length ? "none" : "flex"
   const seen = new Set()
   for (const d of state.devices) {
@@ -141,6 +144,129 @@ function endDrag() {
 }
 
 swap.addEventListener("change", () => send({ t: "settings", swap_cmd_ctrl: swap.checked }))
+clipboardToggle.addEventListener("change", () => send({ t: "settings", clipboard: clipboardToggle.checked }))
 window.addEventListener("resize", () => drag || render())
 setInterval(() => send({ t: "ping" }), 20000)
 connect()
+initFiles()
+
+// ---------------------------------------------------------------- shared files
+
+const filesBody = document.getElementById("files")
+const filesEmpty = document.getElementById("files-empty")
+const uploadsBox = document.getElementById("uploads")
+
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`
+  const units = ["KB", "MB", "GB", "TB"]
+  let v = n / 1024, i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`
+}
+
+function fmtTime(sec) {
+  const d = new Date(sec * 1000), now = new Date()
+  const pad = x => String(x).padStart(2, "0")
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (d.toDateString() === now.toDateString()) return `今天 ${hm}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
+}
+
+function fileURL(name) {
+  return `/api/files/${encodeURIComponent(name)}`
+}
+
+function renderFiles(files) {
+  filesBody.textContent = ""
+  filesEmpty.style.display = files.length ? "none" : "block"
+  for (const f of files) {
+    const tr = document.createElement("tr")
+    const name = document.createElement("td")
+    name.className = "name"
+    const link = document.createElement("a")
+    link.href = fileURL(f.name)
+    link.download = f.name
+    link.textContent = f.name
+    name.appendChild(link)
+    const size = document.createElement("td")
+    size.className = "num meta"
+    size.textContent = fmtSize(f.size)
+    const from = document.createElement("td")
+    from.className = "meta"
+    from.textContent = f.uploader || "-"
+    const time = document.createElement("td")
+    time.className = "meta"
+    time.textContent = fmtTime(f.modified)
+    const actions = document.createElement("td")
+    actions.className = "actions"
+    const dl = document.createElement("button")
+    dl.textContent = "下载"
+    dl.onclick = () => link.click()
+    const del = document.createElement("button")
+    del.textContent = "删除"
+    del.onclick = async () => {
+      if (!confirm(`删除“${f.name}”？所有设备上都将无法再下载它。`)) return
+      const r = await fetch(fileURL(f.name), { method: "DELETE" })
+      if (!r.ok && r.status !== 404) alert(`删除失败：HTTP ${r.status}`)
+    }
+    actions.append(dl, del)
+    tr.append(name, size, from, time, actions)
+    filesBody.appendChild(tr)
+  }
+}
+
+function upload(file) {
+  const row = document.createElement("div")
+  row.className = "upload"
+  row.innerHTML = `<span class="uname"></span><span class="bar"><i></i></span><span class="pct">0%</span>`
+  row.querySelector(".uname").textContent = file.name
+  const bar = row.querySelector(".bar i"), pct = row.querySelector(".pct")
+  uploadsBox.appendChild(row)
+  const xhr = new XMLHttpRequest()
+  xhr.open("PUT", fileURL(file.name))
+  xhr.setRequestHeader("Content-Type", "application/octet-stream")
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return
+    const p = Math.floor((e.loaded / e.total) * 100)
+    bar.style.width = `${p}%`
+    pct.textContent = `${p}%`
+  }
+  const fail = text => {
+    row.classList.add("failed")
+    pct.textContent = text
+    const close = document.createElement("button")
+    close.textContent = "关闭"
+    close.onclick = () => row.remove()
+    row.appendChild(close)
+  }
+  xhr.onload = () => {
+    if (xhr.status >= 200 && xhr.status < 300) row.remove()
+    else fail(xhr.status === 413 ? "文件过大" : `失败 ${xhr.status}`)
+  }
+  xhr.onerror = () => fail("网络错误")
+  xhr.send(file)
+}
+
+async function initFiles() {
+  const input = document.getElementById("file-input")
+  input.addEventListener("change", () => {
+    for (const f of input.files) upload(f)
+    input.value = ""
+  })
+  const zone = document.getElementById("dropzone")
+  zone.addEventListener("dragover", e => {
+    if (![...e.dataTransfer.types].includes("Files")) return
+    e.preventDefault()
+    zone.classList.add("over")
+  })
+  zone.addEventListener("dragleave", () => zone.classList.remove("over"))
+  zone.addEventListener("drop", e => {
+    e.preventDefault()
+    zone.classList.remove("over")
+    for (const f of e.dataTransfer.files) upload(f)
+  })
+  try {
+    const r = await fetch("/api/files")
+    if (r.ok) renderFiles((await r.json()).files)
+  } catch {}
+}

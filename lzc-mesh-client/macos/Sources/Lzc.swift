@@ -112,7 +112,7 @@ final class Lzc {
         } else {
             let e = whoErr ?? "?"
             let missing = e.hasPrefix("HTTP 404") || e.hasPrefix("HTTP 502") || e.hasPrefix("HTTP 503")
-            p.service = (.error, "\(missing ? "微服上未安装或未启动 LZC Mesh 应用" : "无法访问 LZC Mesh 应用")（\(e)）")
+            p.service = (.error, "\(missing ? "微服上未安装或未启动懒猫设备接力应用" : "无法访问懒猫设备接力应用")（\(e)）")
         }
         return p
     }
@@ -134,7 +134,7 @@ final class Lzc {
                 let changed = s.boxDomain != p.boxDomain || s.cookie != p.cookie
                 s.boxName = p.boxName; s.boxDomain = p.boxDomain; s.loginUser = p.loginUser; s.cookie = p.cookie
                 let ready = p.net.0 == .ok && p.login.0 == .ok && s.status[.service]?.0 == .ok
-                if !ready { s.set(.hub, .unknown, "等待 LZC Mesh 应用可用") }
+                if !ready { s.set(.hub, .unknown, "等待懒猫设备接力应用可用") }
                 self.onReady?(ready, changed)
             }
         }

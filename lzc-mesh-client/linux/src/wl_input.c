@@ -19,6 +19,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "app.h"
+#include "clipboard.h"
 #include "net.h"
 #include "wl_input.h"
 
@@ -358,6 +359,7 @@ static const struct wl_seat_listener seat_listener = {seat_caps, seat_name};
 
 static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version) {
 #define BIND(var, type, ver) var = wl_registry_bind(r, name, &type, MIN(version, ver))
+    if (clipboard_bind(W.display, r, name, iface, version)) return;
     if (!strcmp(iface, wl_compositor_interface.name)) BIND(W.compositor, wl_compositor_interface, 4);
     else if (!strcmp(iface, wl_shm_interface.name)) BIND(W.shm, wl_shm_interface, 1);
     else if (!strcmp(iface, wl_seat_interface.name) && !W.seat) {
@@ -453,6 +455,7 @@ void wl_input_init(void) {
     if (!W.constraints) g_string_append(missing, " pointer-constraints");
     if (!W.relative_manager) g_string_append(missing, " relative-pointer");
     if (!W.xdg_output_manager) g_string_append(missing, " xdg-output");
+    clipboard_start(W.seat);
     if (W.vp_manager && W.seat) W.vpointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(W.vp_manager, W.seat);
     bool kb = W.vk_manager && W.seat && setup_virtual_keyboard();
     if (missing->len) {

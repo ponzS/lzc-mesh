@@ -1,9 +1,9 @@
 # Arch Linux package for the LZC Mesh client. Built from this source tree by
 # `make pkg` (the Makefile copies the sources into $srcdir).
 pkgname=lzc-mesh
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
-pkgdesc="Share one keyboard and mouse across your computers over the LazyCat network"
+pkgdesc="懒猫设备接力: share one keyboard, mouse, clipboard and files across your computers over the LazyCat network"
 arch=('x86_64')
 url="https://github.com/ponzS/lzc-mesh"
 license=('LicenseRef-PolyForm-Noncommercial-1.0.0')

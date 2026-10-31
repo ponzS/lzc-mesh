@@ -1,4 +1,4 @@
-// LZC Mesh for macOS: wires the LazyCat probe, hub connection, input and window.
+// 懒猫设备接力 (LZC Mesh) for macOS: wires the LazyCat probe, hub connection, input, clipboard and window.
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let lzc = Lzc()
     let hub = Hub()
     let input = MacInput()
+    let clipboard = Clipboard()
     var ui: MainWindow!
     var timer: Timer?
 
@@ -15,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.onDevices = { [weak self] in self?.ui.refreshLayout() }
         state.onLog = { [weak self] in self?.ui.appendLog($0) }
         hub.input = input
+        hub.clipboard = clipboard
+        clipboard.hub = hub
+        state.onFiles = { [weak self] in self?.ui.filesView.update(AppState.shared.files) }
         input.hub = hub
         hub.onCookieRejected = { [weak self] in self?.lzc.invalidate() }
         lzc.onReady = { [weak self] ready, changed in
@@ -37,7 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "swap": { [weak self] in self?.hub.send(["t": "settings", "swap_cmd_ctrl": self?.ui.swap.state == .on]) },
             "box": { [weak self] in self?.applyBox() },
         ]
-        state.log("LZC Mesh macOS \(AppState.version) 启动，设备 ID \(state.deviceID)")
+        state.log("懒猫设备接力 macOS \(AppState.version) 启动，设备 ID \(state.deviceID)")
+        clipboard.start()
         updateScreen()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.updateScreen() }
         // Ask for missing permissions right away; the system shows its own prompts.
@@ -76,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func copyDiagnostics() {
-        var s = "LZC Mesh macOS \(AppState.version)\n设备 ID: \(state.deviceID)\n微服: \(state.boxDomain)\n"
+        var s = "懒猫设备接力 macOS \(AppState.version)\n设备 ID: \(state.deviceID)\n微服: \(state.boxDomain)\n"
         for k in StatusKey.allCases { s += "\(k.label): \(state.status[k]?.1 ?? "")\n" }
         s += "\n" + ui.logText
         NSPasteboard.general.clearContents()
@@ -103,7 +108,7 @@ let menu = NSMenu()
 let appItem = NSMenuItem()
 menu.addItem(appItem)
 let appMenu = NSMenu()
-appMenu.addItem(withTitle: "退出 LZC Mesh", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+appMenu.addItem(withTitle: "退出懒猫设备接力", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 appItem.submenu = appMenu
 app.mainMenu = menu
 app.run()

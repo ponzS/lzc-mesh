@@ -1,5 +1,5 @@
 // LazyCat network status and sign-in credentials for the box, obtained from the
-// LazyCat client signed in on this computer, then a check that the LZC Mesh LPK answers on lzc-mesh.<box>.
+// LazyCat client signed in on this computer, then a check that the 懒猫设备接力 LPK answers on lzc-mesh.<box>.
 #include "lzc.h"
 
 #include <thread>
@@ -108,7 +108,7 @@ void probe(Probe *p) {
         p->service = {L_OK, fmt(L"lzc-mesh.%ls · 版本 %ls", widen(p->boxDomain).c_str(), widen(who["version"].str("?")).c_str())};
     } else {
         bool missing = r.status == 404 || r.status == 502 || r.status == 503;
-        p->service = {L_ERROR, fmt(L"%ls（%ls）", missing ? L"微服上未安装或未启动 LZC Mesh 应用" : L"无法访问 LZC Mesh 应用", errorOf(r).c_str())};
+        p->service = {L_ERROR, fmt(L"%ls（%ls）", missing ? L"微服上未安装或未启动懒猫设备接力应用" : L"无法访问懒猫设备接力应用", errorOf(r).c_str())};
     }
 }
 }  // namespace

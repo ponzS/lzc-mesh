@@ -14,3 +14,4 @@ void net_send_release(void);
 void net_send_layout(const char *id, double x, double y);
 void net_send_forget(const char *id);
 void net_send_settings(bool swap);
+void net_send_clipboard(const char *text);

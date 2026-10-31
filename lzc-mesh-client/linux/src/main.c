@@ -24,7 +24,7 @@ void app_set_status(int which, StatusLevel level, const char *fmt, ...) {
     s->level = level;
     g_free(s->text);
     s->text = text;
-    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen"};
+    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard"};
     static const char *lv[] = {"..", "ok", "warn", "ERROR"};
     g_printerr("[status] %s %s: %s\n", names[which], lv[level], text);
     app_status_changed();

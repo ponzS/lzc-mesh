@@ -9,10 +9,13 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::layout;
-use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, HubMsg, Platform};
+use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, FileView, HubMsg, Platform};
 use crate::store::{Device, Snapshot, Store};
 
 pub type Tx = mpsc::UnboundedSender<HubMsg>;
+
+/// Largest clipboard text relayed between devices (bytes).
+pub const MAX_CLIPBOARD_BYTES: usize = 256 * 1024;
 
 const KEY_ESC: u32 = 1;
 const KEY_LEFTCTRL: u32 = 29;
@@ -120,10 +123,20 @@ impl Room {
             ClientMsg::Ping => self.reply(conn, HubMsg::Pong),
             ClientMsg::Layout { id, x, y } => self.move_device(&id, x, y),
             ClientMsg::Forget { id } => self.forget(conn, &id),
-            ClientMsg::Settings { swap_cmd_ctrl } => {
-                self.snapshot.settings.swap_cmd_ctrl = swap_cmd_ctrl;
+            ClientMsg::Settings { swap_cmd_ctrl, clipboard } => {
+                if let Some(v) = swap_cmd_ctrl {
+                    self.snapshot.settings.swap_cmd_ctrl = v;
+                }
+                if let Some(v) = clipboard {
+                    self.snapshot.settings.clipboard = v;
+                }
                 self.store.save(&self.user, &self.snapshot);
                 self.broadcast();
+            }
+            ClientMsg::Clipboard { text } => {
+                if let Some(id) = device {
+                    self.clipboard(&id, text);
+                }
             }
             other => {
                 if let Some(id) = device {
@@ -186,6 +199,28 @@ impl Room {
         self.snapshot.devices.remove(id);
         self.store.save(&self.user, &self.snapshot);
         self.broadcast();
+    }
+
+    /// Relays clipboard text to the account's other online devices. Never stored.
+    fn clipboard(&self, from: &str, text: String) {
+        if !self.snapshot.settings.clipboard || text.is_empty() || text.len() > MAX_CLIPBOARD_BYTES {
+            return;
+        }
+        let name = self.snapshot.devices.get(from).map(|d| d.name.clone()).unwrap_or_default();
+        let msg = HubMsg::Clipboard { text, from: name };
+        for c in self.conns.values() {
+            if c.device.as_deref().is_some_and(|id| id != from) {
+                let _ = c.tx.send(msg.clone());
+            }
+        }
+    }
+
+    /// Pushes the shared file list to every connection (devices and pages).
+    pub fn files_changed(&self, files: Vec<FileView>) {
+        let msg = HubMsg::Files { files };
+        for c in self.conns.values() {
+            let _ = c.tx.send(msg.clone());
+        }
     }
 
     fn online(&self) -> impl Iterator<Item = &Device> + Clone {
@@ -490,5 +525,34 @@ mod escape_tests {
         let got = super::tests_support::drain(&mut win);
         assert!(got.iter().any(|m| matches!(m, HubMsg::Key { code: KEY_LEFTMETA, down: false })));
         assert!(super::tests_support::drain(&mut mac).iter().any(|m| matches!(m, HubMsg::Release { .. })));
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_is_off_by_default_and_never_echoed() {
+        let mut r = super::tests_support::room();
+        let mut mac = super::tests_support::hello(&mut r, 1, "mac", Platform::Macos, 1470.0, 956.0);
+        let mut win = super::tests_support::hello(&mut r, 2, "win", Platform::Windows, 1707.0, 960.0);
+        let clip = |rx: &mut mpsc::UnboundedReceiver<HubMsg>| {
+            let mut n = 0;
+            while let Ok(m) = rx.try_recv() {
+                if matches!(m, HubMsg::Clipboard { .. }) {
+                    n += 1;
+                }
+            }
+            n
+        };
+        r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
+        assert_eq!(clip(&mut win), 0, "relayed while disabled");
+
+        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(true) });
+        assert!(r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
+        r.handle(1, ClientMsg::Clipboard { text: "hello".into() });
+        assert_eq!(clip(&mut win), 1);
+        assert_eq!(clip(&mut mac), 0, "echoed to the sender");
     }
 }

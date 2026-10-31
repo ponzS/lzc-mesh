@@ -56,7 +56,7 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int W, int H, gpointer data)
     cairo_fill(cr);
     PangoLayout *pl = gtk_widget_create_pango_layout(GTK_WIDGET(area), NULL);
     if (!app.devices->len) {
-        pango_layout_set_text(pl, app.hub_connected ? "暂无设备" : "连接 LZC Mesh 服务后显示屏幕布局", -1);
+        pango_layout_set_text(pl, app.hub_connected ? "暂无设备" : "连接设备接力中枢后显示屏幕布局", -1);
         int tw, th;
         pango_layout_get_pixel_size(pl, &tw, &th);
         cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);

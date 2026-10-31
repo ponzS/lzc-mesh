@@ -1,12 +1,12 @@
-# LZC Mesh
+# 懒猫设备接力（LZC Mesh）
 
-用一套键盘和触控板/鼠标控制面前的多台电脑（macOS、Windows、Linux）。只同步光标和键盘，不传画面。设备之间通过懒猫网络通信。
+用一套键盘和触控板/鼠标控制面前的多台电脑（macOS、Windows、Linux）。只同步光标和键盘，不传画面。还支持共享剪贴板（文本，默认关闭）和跨设备文件共享。设备之间通过懒猫网络通信。
 
 ## 目录
 
 | 路径 | 内容 |
 | --- | --- |
-| `lzc-mesh-lpk/` | 懒猫微服应用：Rust 中枢（布局存储、贴边、输入转发）和布局管理页面 |
+| `lzc-mesh-lpk/` | 懒猫微服应用：Rust 中枢（布局存储、贴边、输入转发、剪贴板转发、文件存储）和管理页面 |
 | `lzc-mesh-client/macos/` | macOS 客户端（Swift / AppKit，CGEventTap + CGEvent） |
 | `lzc-mesh-client/windows/` | Windows 客户端（C++ / Win32，低级钩子 + SendInput，WinHTTP） |
 | `lzc-mesh-client/linux/` | Linux 客户端（C / GTK4，wlroots 虚拟指针、虚拟键盘、layer-shell） |
@@ -17,6 +17,8 @@
 - 客户端通过懒猫网络连接中枢的 WebSocket `/api/ws`。
 - 光标推到有相邻屏幕的边缘时，本机光标被锁住隐藏，移动量和按键转发给中枢，中枢按布局把光标交给相邻设备。按键在线路上统一使用 Linux evdev 键码。
 - 控制其他设备时按 Ctrl+Alt+Esc（Mac 上是 Ctrl+Option+Esc）立即收回。
+- 共享剪贴板在管理页面“设置”中开启，默认关闭。只同步文本，最大 256 KB；中枢只在同一账号的在线设备间转发，不保存内容。密码管理器标记为隐私的内容不会同步。
+- 文件共享：在管理页面或任一客户端窗口上传，同一账号的所有设备都能下载。文件保存在微服的 `/lzcapp/var/files`，单个文件最大 4 GB。
 
 ## 下载
 

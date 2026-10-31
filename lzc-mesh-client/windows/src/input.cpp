@@ -353,11 +353,8 @@ void wheel(double dx, double dy) {
     if (n) sendInputs(in, n);
 }
 
-void key(uint32_t e, bool down) {
-    Sc s;
-    if (!evdevToScan(e, s)) return;
-    if (down) heldKeys.insert(e);
-    else if (!heldKeys.erase(e)) return;
+namespace {
+void sendKey(const Sc &s, bool down) {
     INPUT in{};
     in.type = INPUT_KEYBOARD;
     in.ki.wScan = s.sc;
@@ -365,7 +362,76 @@ void key(uint32_t e, bool down) {
     sendInputs(&in, 1);
 }
 
+// Key repeat. Windows only auto-repeats keys of a physical keyboard, so a held
+// remote key is repeated here with the user's own delay/rate settings.
+UINT_PTR repeatTimer = 0;
+uint32_t repeatKey = 0;
+bool repeating = false;
+
+bool noRepeat(uint32_t e) {
+    switch (e) {
+    case 29: case 97: case 42: case 54: case 56: case 100: case 125: case 126:  // ctrl shift alt win
+    case 58: case 69: case 70:                                                  // caps / num / scroll lock
+        return true;
+    }
+    return false;
+}
+
+UINT repeatDelayMs() {
+    int d = 1;  // 0..3 -> 250..1000 ms
+    SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, &d, 0);
+    return 250 * (std::min(3, std::max(0, d)) + 1);
+}
+
+UINT repeatIntervalMs() {
+    DWORD s = 31;  // 0..31 -> ~2.5..~30 repeats per second
+    SystemParametersInfoW(SPI_GETKEYBOARDSPEED, 0, &s, 0);
+    double cps = 2.5 + std::min<DWORD>(s, 31) * (30.0 - 2.5) / 31.0;
+    return (UINT)(1000.0 / cps);
+}
+
+void stopRepeat() {
+    if (repeatTimer) KillTimer(nullptr, repeatTimer);
+    repeatTimer = 0;
+    repeatKey = 0;
+    repeating = false;
+}
+
+void CALLBACK repeatProc(HWND, UINT, UINT_PTR id, DWORD) {
+    Sc s;
+    if (id != repeatTimer || !heldKeys.count(repeatKey) || !evdevToScan(repeatKey, s)) {
+        KillTimer(nullptr, id);
+        if (id == repeatTimer) stopRepeat();
+        return;
+    }
+    if (!repeating) {
+        // First fire after the initial delay: switch to the repeat rate.
+        KillTimer(nullptr, repeatTimer);
+        repeatTimer = SetTimer(nullptr, 0, repeatIntervalMs(), repeatProc);
+        repeating = true;
+    }
+    sendKey(s, true);
+}
+
+void startRepeat(uint32_t e) {
+    stopRepeat();
+    repeatKey = e;
+    repeatTimer = SetTimer(nullptr, 0, repeatDelayMs(), repeatProc);
+}
+}  // namespace
+
+void key(uint32_t e, bool down) {
+    Sc s;
+    if (!evdevToScan(e, s)) return;
+    if (down) heldKeys.insert(e);
+    else if (!heldKeys.erase(e)) return;
+    sendKey(s, down);
+    if (down && !noRepeat(e)) startRepeat(e);   // the newest key repeats, like a real keyboard
+    else if (!down && e == repeatKey) stopRepeat();
+}
+
 void leave() {
+    stopRepeat();
     for (uint32_t k : std::set<uint32_t>(heldKeys)) key(k, false);
     for (int b : std::set<int>(heldButtons)) button(b, false);
     controlled = false;

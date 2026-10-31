@@ -3,17 +3,18 @@ import AppKit
 enum Level { case unknown, ok, warn, error }
 
 enum StatusKey: Int, CaseIterable {
-    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen
+    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen, clipboard
     var label: String {
         switch self {
         case .lzcClient: return "懒猫微服客户端"
         case .lzcNetwork: return "懒猫网络"
         case .login: return "登录会话"
-        case .service: return "LZC Mesh 应用"
+        case .service: return "设备接力应用"
         case .hub: return "中枢连接"
         case .permission: return "系统权限"
         case .control: return "控制状态"
         case .screen: return "本机屏幕"
+        case .clipboard: return "共享剪贴板"
         }
     }
 }
@@ -27,7 +28,7 @@ struct MeshDevice {
 /// Main-thread state shared by all components.
 final class AppState {
     static let shared = AppState()
-    static let version = "0.1.0"
+    static let version = "0.1.1"
 
     var status: [StatusKey: (Level, String)] = Dictionary(uniqueKeysWithValues: StatusKey.allCases.map { ($0, (.unknown, "检测中…")) })
     var deviceID: String
@@ -39,12 +40,15 @@ final class AppState {
     var devices: [MeshDevice] = []
     var activeSource: String?, activeTarget: String?
     var swapCmdCtrl = true
+    var clipboardEnabled = false
+    var files: [SharedFile] = []
     var captured = false, controlled = false
     var screenW = 0.0, screenH = 0.0
 
     var onStatus: (() -> Void)?
     var onDevices: (() -> Void)?
     var onLog: ((String) -> Void)?
+    var onFiles: (() -> Void)?
 
     private let configURL: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/lzc-mesh")
@@ -94,6 +98,12 @@ final class AppState {
     }
 
     func deviceName(_ id: String?) -> String { devices.first { $0.id == id }?.name ?? id ?? "?" }
+
+    func updateClipboardStatus() {
+        if !hubConnected { set(.clipboard, .unknown, "等待连接中枢") }
+        else if clipboardEnabled { set(.clipboard, .ok, "已开启：复制的文本会同步到其他在线设备") }
+        else { set(.clipboard, .unknown, "未开启（在管理页面“设置”中开启）") }
+    }
 
     func updateControlStatus() {
         if captured { set(.control, .ok, "本机正在控制 \(deviceName(activeTarget))（Ctrl+Option+Esc 收回）") }

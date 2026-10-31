@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs LZC Mesh for the current user (no root needed) and enables autostart.
+# Installs 懒猫设备接力 (LZC Mesh) for the current user (no root needed) and enables autostart.
 set -eu
 cd "$(dirname "$0")"
 bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
@@ -11,4 +11,4 @@ install -m 0755 lzc-mesh "$bin/lzc-mesh"
 install -m 0644 lzc-mesh.png "$icons/lzc-mesh.png"
 sed "s#^Exec=.*#Exec=$bin/lzc-mesh#" lzc-mesh.desktop > "$apps/lzc-mesh.desktop"
 cp "$apps/lzc-mesh.desktop" "$autostart/lzc-mesh.desktop"
-echo "LZC Mesh installed to $bin/lzc-mesh"
+echo "懒猫设备接力已安装到 $bin/lzc-mesh"

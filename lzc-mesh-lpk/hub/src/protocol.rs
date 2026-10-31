@@ -53,7 +53,15 @@ pub enum ClientMsg {
     Layout { id: String, x: f64, y: f64 },
     /// Remove an offline device from the layout.
     Forget { id: String },
-    Settings { swap_cmd_ctrl: bool },
+    /// Partial settings update from the layout page; omitted fields keep their value.
+    Settings {
+        #[serde(default)]
+        swap_cmd_ctrl: Option<bool>,
+        #[serde(default)]
+        clipboard: Option<bool>,
+    },
+    /// Local clipboard text changed on this device (sent only while sharing is enabled).
+    Clipboard { text: String },
     Ping,
 }
 
@@ -73,12 +81,25 @@ pub struct DeviceView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub swap_cmd_ctrl: bool,
+    /// Shared clipboard between the account's devices. Off unless enabled on the layout page.
+    #[serde(default)]
+    pub clipboard: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { swap_cmd_ctrl: true }
+        Self { swap_cmd_ctrl: true, clipboard: false }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileView {
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub modified: u64,
+    /// Device or browser that uploaded the file.
+    pub uploader: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +127,10 @@ pub enum HubMsg {
     /// `code` is a Linux evdev key code.
     Key { code: u32, down: bool },
     Leave,
+    /// Clipboard text copied on another device; `from` is its display name.
+    Clipboard { text: String, from: String },
+    /// The shared file list changed.
+    Files { files: Vec<FileView> },
     Pong,
     Error { message: String },
 }

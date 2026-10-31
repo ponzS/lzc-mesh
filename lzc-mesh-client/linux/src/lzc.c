@@ -213,7 +213,7 @@ static void probe_thread(GTask *task, gpointer src, gpointer data, GCancellable 
     } else {
         p->service_level = ST_ERROR;
         bool missing = error && (g_str_has_prefix(error, "HTTP 404") || g_str_has_prefix(error, "HTTP 502") || g_str_has_prefix(error, "HTTP 503"));
-        p->service_text = g_strdup_printf("%s（%s）", missing ? "微服上未安装或未启动 LZC Mesh 应用" : "无法访问 LZC Mesh 应用", error ? error : "?");
+        p->service_text = g_strdup_printf("%s（%s）", missing ? "微服上未安装或未启动懒猫设备接力应用" : "无法访问懒猫设备接力应用", error ? error : "?");
     }
     if (who) json_node_unref(who);
     g_free(url);
@@ -245,7 +245,7 @@ static void probe_done(GObject *src, GAsyncResult *res, gpointer data) {
     }
     if (ready && !app.hub_connected && !net_busy()) net_connect();
     if (!ready && app.hub_connected) net_disconnect();
-    if (!ready) app_set_status(S_HUB, ST_UNKNOWN, "等待 LZC Mesh 应用可用");
+    if (!ready) app_set_status(S_HUB, ST_UNKNOWN, "等待懒猫设备接力应用可用");
 }
 
 void lzc_refresh(void) {

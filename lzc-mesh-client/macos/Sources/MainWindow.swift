@@ -37,7 +37,7 @@ final class LayoutView: NSView {
         para.alignment = .center
         para.lineBreakMode = .byTruncatingTail
         if s.devices.isEmpty {
-            let t = s.hubConnected ? "暂无设备" : "连接 LZC Mesh 服务后显示屏幕布局"
+            let t = s.hubConnected ? "暂无设备" : "连接设备接力中枢后显示屏幕布局"
             (t as NSString).draw(in: bounds.insetBy(dx: 0, dy: bounds.height / 2 - 10),
                                  withAttributes: [.foregroundColor: NSColor.gray, .paragraphStyle: para, .font: NSFont.systemFont(ofSize: 12)])
             return
@@ -96,6 +96,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
     private var dots: [StatusKey: NSView] = [:]
     private var texts: [StatusKey: NSTextField] = [:]
     let layoutView = LayoutView()
+    let filesView = FilesView()
     let swap = NSButton(checkboxWithTitle: "Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl", target: nil, action: nil)
     let boxField = NSTextField()
     let logView = NSTextView()
@@ -103,9 +104,9 @@ final class MainWindow: NSObject, NSWindowDelegate {
     var actions: [String: () -> Void] = [:]
 
     override init() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 980), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init()
-        window.title = "LZC Mesh"
+        window.title = "懒猫设备接力"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.appearance = NSAppearance(named: .aqua)
@@ -195,9 +196,11 @@ final class MainWindow: NSObject, NSWindowDelegate {
         logView.autoresizingMask = [.width]
         scroll.documentView = logView
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: 100).isActive = true
 
-        let root = NSStackView(views: [card("状态", [grid, boxRow, actionsRow]), card("屏幕布局", [hint, layoutView, swap]), card("事件日志", [scroll])])
+        filesView.translatesAutoresizingMaskIntoConstraints = false
+        let root = NSStackView(views: [card("状态", [grid, boxRow, actionsRow]), card("屏幕布局", [hint, layoutView, swap]),
+                                       card("文件共享", [filesView]), card("事件日志", [scroll])])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 12

@@ -23,7 +23,7 @@ rm -rf build/dmg ../dist/lzc-mesh-macos.dmg
 mkdir -p build/dmg
 ditto "$APP" "build/dmg/LZC Mesh.app"
 ln -s /Applications build/dmg/Applications
-hdiutil create -quiet -volname "LZC Mesh" -srcfolder build/dmg -fs HFS+ -format UDZO -ov ../dist/lzc-mesh-macos.dmg
+hdiutil create -quiet -volname "懒猫设备接力" -srcfolder build/dmg -fs HFS+ -format UDZO -ov ../dist/lzc-mesh-macos.dmg
 codesign --force --sign "${IDENTITY:--}" ../dist/lzc-mesh-macos.dmg
 hdiutil verify -quiet ../dist/lzc-mesh-macos.dmg
 rm -f ../dist/lzc-mesh-macos.zip

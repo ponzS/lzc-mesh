@@ -21,6 +21,7 @@ enum {
     S_INPUT,        // Wayland input protocols / permissions
     S_CONTROL,      // current control role
     S_SCREEN,       // local screen geometry used in the layout
+    S_CLIPBOARD,    // shared clipboard state
     S_COUNT
 };
 
@@ -50,6 +51,7 @@ typedef struct {
     GPtrArray *devices;  // MeshDevice*
     char *active_source, *active_target;
     bool swap_cmd_ctrl;
+    bool clipboard_enabled;
 
     // Local input role
     bool captured;    // this device controls another one

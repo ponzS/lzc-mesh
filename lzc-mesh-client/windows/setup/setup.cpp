@@ -1,4 +1,4 @@
-// LZC Mesh setup for Windows. A single self-contained exe: the client is embedded
+// 懒猫设备接力 (LZC Mesh) setup for Windows. A single self-contained exe: the client is embedded
 // as an RCDATA resource. Installs per user (no admin): %LOCALAPPDATA%\Programs\LZC Mesh,
 // Start menu + Startup shortcuts and an "Apps & features" entry. The installed copy of
 // this program acts as the uninstaller.
@@ -19,8 +19,9 @@
 #include <string>
 
 namespace {
-const wchar_t *kTitle = L"LZC Mesh 安装";
-const wchar_t *kVersion = L"0.1.0";
+const wchar_t *kTitle = L"懒猫设备接力 安装";
+const wchar_t *kName = L"懒猫设备接力";
+const wchar_t *kVersion = L"0.1.1";
 const wchar_t *kExeName = L"LZC Mesh.exe";
 const wchar_t *kUninstallKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LZCMesh";
 bool silent = false;
@@ -38,8 +39,11 @@ std::wstring knownFolder(REFKNOWNFOLDERID id) {
     CoTaskMemFree(p);
     return r;
 }
-std::wstring startMenuLink() { return knownFolder(FOLDERID_Programs) + L"\\LZC Mesh.lnk"; }
-std::wstring startupLink() { return knownFolder(FOLDERID_Startup) + L"\\LZC Mesh.lnk"; }
+std::wstring startMenuLink() { return knownFolder(FOLDERID_Programs) + L"\\懒猫设备接力.lnk"; }
+std::wstring startupLink() { return knownFolder(FOLDERID_Startup) + L"\\懒猫设备接力.lnk"; }
+// Shortcut names used by v0.1.0; removed on upgrade and uninstall.
+std::wstring oldStartMenuLink() { return knownFolder(FOLDERID_Programs) + L"\\LZC Mesh.lnk"; }
+std::wstring oldStartupLink() { return knownFolder(FOLDERID_Startup) + L"\\LZC Mesh.lnk"; }
 
 void message(const std::wstring &text, UINT icon = MB_ICONINFORMATION) {
     if (!silent) MessageBoxW(nullptr, text.c_str(), kTitle, MB_OK | icon);
@@ -98,7 +102,7 @@ bool createShortcut(const std::wstring &link, const std::wstring &target, const 
     if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&sl)))) return false;
     sl->SetPath(target.c_str());
     sl->SetWorkingDirectory(dir.c_str());
-    sl->SetDescription(L"LZC Mesh");
+    sl->SetDescription(kName);
     IPersistFile *pf = nullptr;
     bool ok = SUCCEEDED(sl->QueryInterface(IID_PPV_ARGS(&pf))) && SUCCEEDED(pf->Save(link.c_str(), TRUE));
     if (pf) pf->Release();
@@ -112,7 +116,7 @@ void setString(HKEY k, const wchar_t *name, const std::wstring &v) {
 void setDword(HKEY k, const wchar_t *name, DWORD v) { RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE *)&v, sizeof v); }
 
 bool install() {
-    if (!silent && MessageBoxW(nullptr, (L"将 LZC Mesh " + std::wstring(kVersion) + L" 安装到：\n" + installDir() +
+    if (!silent && MessageBoxW(nullptr, (L"将懒猫设备接力 " + std::wstring(kVersion) + L" 安装到：\n" + installDir() +
                                          L"\n\n安装后会创建开始菜单快捷方式并随系统启动。是否继续？").c_str(),
                                kTitle, MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
         return false;
@@ -121,15 +125,17 @@ bool install() {
     if (SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr) != ERROR_SUCCESS && GetLastError() != ERROR_ALREADY_EXISTS &&
         GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES)
         return fail(L"无法创建安装目录 " + dir);
-    if (!writeEmbeddedClient(exe)) return fail(L"无法写入 " + exe + L"，请关闭正在运行的 LZC Mesh 后重试");
+    if (!writeEmbeddedClient(exe)) return fail(L"无法写入 " + exe + L"，请关闭正在运行的懒猫设备接力后重试");
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     if (_wcsicmp(self, uninstaller.c_str()) != 0 && !CopyFileW(self, uninstaller.c_str(), FALSE)) return fail(L"无法写入卸载程序");
+    DeleteFileW(oldStartMenuLink().c_str());
+    DeleteFileW(oldStartupLink().c_str());
     if (!createShortcut(startMenuLink(), exe, dir) || !createShortcut(startupLink(), exe, dir)) return fail(L"无法创建快捷方式");
 
     HKEY k;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, kUninstallKey, 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr) == ERROR_SUCCESS) {
-        setString(k, L"DisplayName", L"LZC Mesh");
+        setString(k, L"DisplayName", kName);
         setString(k, L"DisplayVersion", kVersion);
         setString(k, L"Publisher", L"ponzS");
         setString(k, L"DisplayIcon", exe);
@@ -144,18 +150,20 @@ bool install() {
         RegCloseKey(k);
     }
     ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, dir.c_str(), SW_SHOWNORMAL);
-    message(L"LZC Mesh 已安装并启动。\n\n可在开始菜单中找到它，也可在“设置 › 应用”中卸载。");
+    message(L"懒猫设备接力已安装并启动。\n\n可在开始菜单中找到它，也可在“设置 › 应用”中卸载。");
     return true;
 }
 
 bool uninstall() {
-    if (!silent && MessageBoxW(nullptr, L"确定要卸载 LZC Mesh 吗？\n\n设备 ID 和设置保存在 %USERPROFILE%\\.config\\lzc-mesh，不会被删除。",
-                               L"卸载 LZC Mesh", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+    if (!silent && MessageBoxW(nullptr, L"确定要卸载懒猫设备接力吗？\n\n设备 ID 和设置保存在 %USERPROFILE%\\.config\\lzc-mesh，不会被删除。",
+                               L"卸载懒猫设备接力", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
         return false;
     std::wstring dir = installDir();
     stopClient();
     DeleteFileW(startMenuLink().c_str());
     DeleteFileW(startupLink().c_str());
+    DeleteFileW(oldStartMenuLink().c_str());
+    DeleteFileW(oldStartupLink().c_str());
     RegDeleteKeyW(HKEY_CURRENT_USER, kUninstallKey);
     DeleteFileW((dir + L"\\" + kExeName).c_str());
     // This uninstaller is running from the install dir; remove it and the dir once it exits.
@@ -166,7 +174,7 @@ bool uninstall() {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
-    message(L"LZC Mesh 已卸载。");
+    message(L"懒猫设备接力已卸载。");
     return true;
 }
 }  // namespace

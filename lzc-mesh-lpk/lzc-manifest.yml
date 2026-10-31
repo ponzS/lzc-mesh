@@ -8,3 +8,4 @@ application:
     LZC_MESH_LISTEN: "0.0.0.0:8080"
     LZC_MESH_DATA: /lzcapp/var/layouts
     LZC_MESH_WEB: /lzcapp/pkg/content/web
+    LZC_MESH_FILES: /lzcapp/var/files

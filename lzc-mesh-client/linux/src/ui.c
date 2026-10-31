@@ -8,13 +8,14 @@
 #include "ui.h"
 
 #include "config.h"
+#include "files.h"
 
 static GtkWidget *window, *layout_view, *swap_check, *log_view, *open_btn, *box_entry;
 static GtkWidget *status_dot[S_COUNT], *status_text[S_COUNT];
 static bool updating_swap;
 
 static const char *labels[S_COUNT] = {
-    "懒猫微服客户端", "懒猫网络", "登录会话", "LZC Mesh 应用", "中枢连接", "输入权限", "控制状态", "本机屏幕",
+    "懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板",
 };
 
 static const char *css =
@@ -108,7 +109,7 @@ static void on_retry(GtkButton *b, gpointer u) {
 }
 
 static void on_copy(GtkButton *b, gpointer u) {
-    GString *s = g_string_new("LZC Mesh Linux " LZC_MESH_VERSION "\n");
+    GString *s = g_string_new("懒猫设备接力 Linux " LZC_MESH_VERSION "\n");
     g_string_append_printf(s, "设备 ID: %s\n微服: %s\n", app.device_id, app.box_domain ? app.box_domain : "-");
     for (int i = 0; i < S_COUNT; i++) g_string_append_printf(s, "%s: %s\n", labels[i], app.status[i].text);
     GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(log_view));
@@ -187,8 +188,8 @@ void ui_build(GtkApplication *gtk_app) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     window = gtk_application_window_new(gtk_app);
-    gtk_window_set_title(GTK_WINDOW(window), "LZC Mesh");
-    gtk_window_set_default_size(GTK_WINDOW(window), 900, 820);
+    gtk_window_set_title(GTK_WINDOW(window), "懒猫设备接力");
+    gtk_window_set_default_size(GTK_WINDOW(window), 920, 960);
     // Keep running (and sharing input) when the window is closed; quit from the button.
     gtk_window_set_hide_on_close(GTK_WINDOW(window), TRUE);
     g_application_hold(G_APPLICATION(gtk_app));
@@ -232,6 +233,7 @@ void ui_build(GtkApplication *gtk_app) {
     GtkWidget *lay_card = card("屏幕布局", lay);
     gtk_widget_set_vexpand(lay_card, TRUE);
     gtk_box_append(GTK_BOX(root), lay_card);
+    gtk_box_append(GTK_BOX(root), card("文件共享", files_panel_new(window)));
 
     log_view = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(log_view), FALSE);
@@ -244,7 +246,7 @@ void ui_build(GtkApplication *gtk_app) {
     gtk_window_set_child(GTK_WINDOW(window), root);
     ui_refresh_status();
     gtk_window_present(GTK_WINDOW(window));
-    app_log("LZC Mesh Linux %s 启动，设备 ID %s", LZC_MESH_VERSION, app.device_id);
+    app_log("懒猫设备接力 Linux %s 启动，设备 ID %s", LZC_MESH_VERSION, app.device_id);
 }
 
 void ui_present(void) {

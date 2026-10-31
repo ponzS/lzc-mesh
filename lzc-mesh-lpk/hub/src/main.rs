@@ -1,7 +1,9 @@
-//! LZC Mesh hub. Runs inside the LPK, behind lzc-ingress which authenticates
+//! 懒猫设备接力 (LZC Mesh) hub. Runs inside the LPK, behind lzc-ingress which authenticates
 //! every request and injects `X-HC-User-ID`. Native clients reach it through
 //! the LazyCat network using the session cookie of the local LazyCat client.
 
+mod files;
+mod files_api;
 mod hub;
 mod layout;
 mod protocol;
@@ -16,12 +18,14 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
 
+use files::Files;
 use hub::Hub;
 use protocol::{ClientMsg, HubMsg};
 use store::Store;
@@ -29,11 +33,12 @@ use store::Store;
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
-struct App {
-    hub: Hub,
+pub struct App {
+    pub hub: Hub,
+    pub files: Files,
 }
 
-fn user_of(headers: &HeaderMap) -> Option<String> {
+pub fn user_of(headers: &HeaderMap) -> Option<String> {
     let user = headers.get("x-hc-user-id")?.to_str().ok()?.trim();
     (!user.is_empty() && user.len() <= 128).then(|| user.to_string())
 }
@@ -57,7 +62,11 @@ async fn session(app: App, user: String, socket: WebSocket) {
     let room = app.hub.room(&user).await;
     let (tx, mut rx) = mpsc::unbounded_channel::<HubMsg>();
     let (mut sink, mut stream) = socket.split();
-    room.lock().await.attach(conn, tx);
+    {
+        let mut r = room.lock().await;
+        r.attach(conn, tx);
+        r.files_changed(app.files.list(&user));
+    }
     tracing::info!(user, conn, "connected");
 
     let writer = tokio::spawn(async move {
@@ -101,11 +110,17 @@ async fn main() {
     let web = PathBuf::from(std::env::var("LZC_MESH_WEB").unwrap_or_else(|_| "/lzcapp/pkg/content/web".into()));
     let addr: SocketAddr = std::env::var("LZC_MESH_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into()).parse().expect("listen address");
 
-    let app = App { hub: Hub::new(Store::new(data)) };
+    let files_dir = PathBuf::from(std::env::var("LZC_MESH_FILES").unwrap_or_else(|_| "/lzcapp/var/files".into()));
+    let app = App { hub: Hub::new(Store::new(data)), files: Files::new(files_dir) };
     let router = Router::new()
         .route("/api/whoami", get(whoami))
         .route("/api/ws", get(ws))
         .route("/api/health", get(|| async { "ok" }))
+        .route("/api/files", get(files_api::list))
+        .route(
+            "/api/files/{name}",
+            get(files_api::download).put(files_api::upload).delete(files_api::remove).layer(DefaultBodyLimit::disable()),
+        )
         .fallback_service(ServeDir::new(web).append_index_html_on_directories(true))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");

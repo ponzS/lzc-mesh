@@ -68,7 +68,7 @@ final class MacInput {
             if !p.accessibility { missing.append("辅助功能") }
             if !p.listen { missing.append("输入监控") }
             if !p.post && p.accessibility { missing.append("事件发送") }
-            s.set(.permission, .error, "缺少权限：\(missing.joined(separator: "、"))。请在弹出的系统对话框或“系统设置 › 隐私与安全性”中允许 LZC Mesh")
+            s.set(.permission, .error, "缺少权限：\(missing.joined(separator: "、"))。请在弹出的系统对话框或“系统设置 › 隐私与安全性”中允许“懒猫设备接力”")
         }
     }
 
@@ -80,7 +80,7 @@ final class MacInput {
         let mask = types.reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask,
                                         callback: tapCallback, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            AppState.shared.set(.permission, .error, "无法创建事件监听（CGEventTap），请确认已授予辅助功能和输入监控权限后重启 LZC Mesh")
+            AppState.shared.set(.permission, .error, "无法创建事件监听（CGEventTap），请确认已授予辅助功能和输入监控权限后重启懒猫设备接力")
             return
         }
         tap = t
@@ -311,10 +311,50 @@ final class MacInput {
         let e = CGEvent(keyboardEventSource: source, virtualKey: k, keyDown: down)
         e?.flags = CGEventFlags(rawValue: flags)
         post(e)
+        // The newest key repeats, like a real keyboard. Caps Lock and Fn never repeat.
+        if down && k != macCapsLock && k != macFn { startRepeat(k) } else if !down && k == repeatKey { stopRepeat() }
+    }
+
+    // MARK: key repeat
+    // macOS only auto-repeats keys of a physical keyboard, so a held remote key is
+    // repeated here with the user's own "delay until repeat" / "key repeat rate".
+
+    private var repeatTimer: Timer?
+    private var repeatKey: UInt16?
+
+    private func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatKey = nil
+    }
+
+    private func schedule(_ interval: TimeInterval, repeats: Bool, _ body: @escaping () -> Void) -> Timer {
+        let t = Timer(timeInterval: interval, repeats: repeats) { _ in body() }
+        RunLoop.main.add(t, forMode: .common)  // keep firing while menus or window drags track
+        return t
+    }
+
+    private func startRepeat(_ k: UInt16) {
+        stopRepeat()
+        repeatKey = k
+        repeatTimer = schedule(NSEvent.keyRepeatDelay, repeats: false) { [weak self] in
+            guard let self = self, self.repeatKey == k else { return }
+            self.repeatOnce(k)
+            self.repeatTimer = self.schedule(max(NSEvent.keyRepeatInterval, 0.015), repeats: true) { [weak self] in self?.repeatOnce(k) }
+        }
+    }
+
+    private func repeatOnce(_ k: UInt16) {
+        guard heldKeys.contains(k), repeatKey == k else { stopRepeat(); return }
+        let e = CGEvent(keyboardEventSource: source, virtualKey: k, keyDown: true)
+        e?.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
+        e?.flags = CGEventFlags(rawValue: flags)
+        post(e)
     }
 
     /// Releases everything a remote controller still holds so nothing gets stuck.
     func leave() {
+        stopRepeat()
         for k in heldKeys { key(macToEvdev[k] ?? 0, down: false) }
         heldKeys.removeAll()
         for b in heldButtons { button(b, down: false) }

@@ -13,16 +13,25 @@
 
 #include "json.h"
 
-#define LZC_MESH_VERSION "0.1.0"
+#define LZC_MESH_VERSION "0.1.1"
 
 enum Level { L_UNKNOWN, L_OK, L_WARN, L_ERROR };
 
-enum StatusKey { S_LZC_CLIENT, S_LZC_NETWORK, S_LOGIN, S_SERVICE, S_HUB, S_INPUT, S_CONTROL, S_SCREEN, S_COUNT };
+enum StatusKey { S_LZC_CLIENT, S_LZC_NETWORK, S_LOGIN, S_SERVICE, S_HUB, S_INPUT, S_CONTROL, S_SCREEN, S_CLIPBOARD, S_COUNT };
 
 struct Status {
     Level level = L_UNKNOWN;
     std::wstring text = L"检测中…";
 };
+
+struct SharedFile {
+    std::string name, uploader;
+    long long size = 0;
+    double modified = 0;
+};
+
+// Control ids shared between main.cpp and files.cpp.
+enum { ID_FILES_LIST = 300, ID_FILES_STATUS, ID_FILES_UPLOAD, ID_FILES_DOWNLOAD, ID_FILES_DELETE };
 
 struct MeshDevice {
     std::string id, name, platform, version;
@@ -38,6 +47,8 @@ enum {
     WM_APP_HUB_CLOSED,          // lParam: std::wstring* reason, wParam: HTTP status
     WM_APP_EDGE,                // wParam: dir, lParam: pos*10000
     WM_APP_INPUT,               // lParam: std::string* (JSON frame to send)
+    WM_APP_FILES_STATUS,        // lParam: std::wstring* status text
+    WM_APP_FILES_REVEAL,        // lParam: std::wstring* downloaded path
 };
 
 struct App {
@@ -50,6 +61,7 @@ struct App {
     std::vector<MeshDevice> devices;
     std::string activeSource, activeTarget;
     bool swapCmdCtrl = true;
+    bool clipboardEnabled = false;
     bool captured = false, controlled = false;
     int screenX = 0, screenY = 0, screenW = 0, screenH = 0;  // virtual desktop in physical px
     double dpiScale = 1.0;
