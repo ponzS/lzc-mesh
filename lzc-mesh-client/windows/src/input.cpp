@@ -14,7 +14,7 @@ namespace input {
 namespace {
 const ULONG_PTR kMarker = 0x4C5A4D45;  // dwExtraInfo of events we inject
 
-std::atomic<bool> captured{false}, hubOn{false}, controlled{false};
+std::atomic<bool> captured{false}, hubOn{false}, controlled{false}, sharingOn{true};
 std::atomic<bool> edges[4];  // left right up down
 std::atomic<long long> quietUntil{0}, lastEdge{0};
 std::atomic<int> vx{0}, vy{0}, vw{0}, vh{0};
@@ -122,7 +122,7 @@ uint32_t scanToEvdev(uint16_t sc, bool ext) {
 // ---- hooks
 
 void edgeCheck(POINT pt) {
-    if (!hubOn || controlled || nowMs() < quietUntil || nowMs() - lastEdge < 250) return;
+    if (!hubOn || !sharingOn || controlled || nowMs() < quietUntil || nowMs() - lastEdge < 250) return;
     int x0 = vx, y0 = vy, x1 = vx + vw - 1, y1 = vy + vh - 1;
     int dir = -1;
     if (edges[0] && pt.x <= x0) dir = 0;
@@ -291,6 +291,7 @@ void stop() {
 
 void setEdges(bool l, bool r, bool u, bool d) { edges[0] = l; edges[1] = r; edges[2] = u; edges[3] = d; }
 void setHubConnected(bool on) { hubOn = on; }
+void setSharing(bool on) { sharingOn = on; }
 
 void capture(bool on) {
     if (on) {

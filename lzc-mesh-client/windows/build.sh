@@ -8,7 +8,7 @@ mkdir -p build ../dist
 CXX="zig c++ -target x86_64-windows-gnu -std=c++17 -O2 -municode -DUNICODE -D_UNICODE -Wl,--subsystem,windows"
 zig rc /fo build/lzc-mesh.res lzc-mesh.rc
 $CXX src/*.cpp build/lzc-mesh.res \
-  -lwinhttp -luser32 -lgdi32 -lshell32 -lole32 -lcomctl32 -ladvapi32 -lshcore -lshlwapi -lcomdlg32 \
+  -lwinhttp -luser32 -lgdi32 -lshell32 -lole32 -lcomctl32 -ladvapi32 -lshcore -lshlwapi -lcomdlg32 -luxtheme \
   -o "build/LZC Mesh.exe"
 # The setup embeds the client exe built above as a resource.
 zig rc /fo build/setup.res setup/setup.rc

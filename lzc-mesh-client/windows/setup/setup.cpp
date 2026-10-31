@@ -59,7 +59,8 @@ void stopClient() {
     if (HWND w = FindWindowW(L"LzcMeshMain", nullptr)) {
         DWORD pid = 0;
         GetWindowThreadProcessId(w, &pid);
-        PostMessageW(w, WM_CLOSE, 0, 0);
+        // The client hides to the tray on WM_CLOSE; this registered message makes it exit.
+        PostMessageW(w, RegisterWindowMessageW(L"LzcMeshQuit"), 0, 0);
         if (HANDLE p = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
             WaitForSingleObject(p, 5000);
             CloseHandle(p);

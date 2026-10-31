@@ -12,6 +12,7 @@ void stop();
 void refreshScreen();  // re-reads virtual desktop size; returns via g.screen*
 void setEdges(bool left, bool right, bool up, bool down);
 void setHubConnected(bool on);
+void setSharing(bool on);   // tray switch: when off, screen edges are ignored
 void capture(bool on);
 void warp(double nx, double ny);
 void enter(double nx, double ny);

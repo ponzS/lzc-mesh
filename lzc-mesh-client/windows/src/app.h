@@ -37,6 +37,7 @@ struct MeshDevice {
     std::string id, name, platform, version;
     double x = 0, y = 0, w = 0, h = 0;
     bool online = false;
+    bool sharing = true;
 };
 
 // Messages posted to the main window from other threads.
@@ -49,6 +50,7 @@ enum {
     WM_APP_INPUT,               // lParam: std::string* (JSON frame to send)
     WM_APP_FILES_STATUS,        // lParam: std::wstring* status text
     WM_APP_FILES_REVEAL,        // lParam: std::wstring* downloaded path
+    WM_APP_TRAY,                // notification-area icon callback
 };
 
 struct App {
@@ -62,6 +64,7 @@ struct App {
     std::string activeSource, activeTarget;
     bool swapCmdCtrl = true;
     bool clipboardEnabled = false;
+    bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted
     bool captured = false, controlled = false;
     int screenX = 0, screenY = 0, screenW = 0, screenH = 0;  // virtual desktop in physical px
     double dpiScale = 1.0;

@@ -1,7 +1,12 @@
-// 懒猫设备接力 (LZC Mesh) for Windows: Win32 window with status panel, layout editor, shared files and log.
+// 懒猫设备接力 (LZC Mesh) for Windows: tray icon, main window (mainwin.cpp), hub messages.
 #include "app.h"
+#include "autostart.h"
 #include "clipboard.h"
 #include "files.h"
+#include "layoutview.h"
+#include "mainwin.h"
+#include "tray.h"
+#include "ui.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -20,19 +25,17 @@
 App g;
 
 namespace {
-HFONT font, fontBold, fontSmall, fontMono;
-HWND hStatusText[S_COUNT], hLayout, hLog, hBox, hSwap, hPermBtn, hOpenBtn;
-UINT dpi = 96;
+using namespace mainwin;
 long long serviceCheckedAt = 0;
 bool probing = false;
-bool updatingSwap = false;
-long long lastMoveLog = 0, lastKeyLog = 0;
+long long lastMoveLog = 0;
+UINT taskbarCreated = 0;
+UINT quitMessage = 0;   // sent by the installer / uninstaller
+bool quitting = false;
 
-enum { ID_RETRY = 100, ID_OPEN, ID_COPY, ID_QUIT, ID_BOX_APPLY, ID_SWAP, ID_ELEVATE, ID_TIMER = 1, ID_FG_TIMER = 2 };
+enum { ID_TIMER = 1, ID_FG_TIMER = 2 };
 
 const wchar_t *labels[S_COUNT] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板"};
-
-int S(int v) { return MulDiv(v, (int)dpi, 96); }
 
 std::wstring configPath() {
     wchar_t home[MAX_PATH];
@@ -43,7 +46,7 @@ std::wstring configPath() {
 }
 
 void saveConfig() {
-    std::string text = JsonOut().s("device_id", g.deviceId).s("box", g.boxOverride).str();
+    std::string text = JsonOut().s("device_id", g.deviceId).s("box", g.boxOverride).b("sharing", g.sharingEnabled).str();
     HANDLE f = CreateFileW(configPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD w;
@@ -62,6 +65,7 @@ void loadConfig() {
         if (Json::parse(std::string(buf, n), j)) {
             g.deviceId = j["device_id"].str();
             g.boxOverride = j["box"].str();
+            g.sharingEnabled = j["sharing"].boolean(true);
         }
     }
     if (g.deviceId.empty()) {
@@ -105,6 +109,7 @@ void sendHello() {
     GetComputerNameExW(ComputerNamePhysicalDnsHostname, name, &n);
     hubws::send(JsonOut().s("t", "hello").s("id", g.deviceId).s("name", narrow(name)).s("platform", "windows")
                     .n("w", g.screenW / g.dpiScale).n("h", g.screenH / g.dpiScale).s("version", LZC_MESH_VERSION).str());
+    if (!g.sharingEnabled) hubws::send(JsonOut().s("t", "sharing").b("enabled", false).str());
 }
 
 void startProbe() {
@@ -139,7 +144,9 @@ void onProbe(Probe *p) {
     }
     if (!ready && g.hubConnected) hubws::close();
     if (!ready) setStatus(S_HUB, L_UNKNOWN, L"等待懒猫设备接力应用可用");
-    EnableWindow(hOpenBtn, !g.boxDomain.empty());
+    setOpenEnabled(!g.boxDomain.empty());
+    mainwin::refresh();
+    tray::refresh();
     delete p;
 }
 
@@ -155,7 +162,8 @@ void onHubText(const std::string &text) {
         g.devices.clear();
         int online = 0;
         for (auto &d : o["devices"].a) {
-            MeshDevice m{d["id"].str(), d["name"].str(), d["platform"].str(), d["version"].str(), d["x"].num(), d["y"].num(), d["w"].num(), d["h"].num(), d["online"].boolean()};
+            MeshDevice m{d["id"].str(), d["name"].str(), d["platform"].str(), d["version"].str(), d["x"].num(), d["y"].num(), d["w"].num(), d["h"].num(), d["online"].boolean(),
+                         d["sharing"].boolean(true)};
             online += m.online;
             g.devices.push_back(m);
         }
@@ -262,7 +270,7 @@ void checkForegroundIntegrity() {
         g.elevatedForeground = elevated;
         if (elevated) {
             setStatus(S_INPUT, L_WARN, L"当前前台是管理员权限窗口，系统禁止普通权限程序向其发送输入。点击“以管理员身份运行”授予权限");
-            ShowWindow(hPermBtn, SW_SHOW);
+            showElevate(true);
         } else {
             setStatus(S_INPUT, L_OK, L"输入钩子与 SendInput 就绪（普通权限；管理员窗口需提权）");
         }
@@ -287,6 +295,7 @@ void relaunchElevated() {
 void copyDiagnostics() {
     std::wstring s = L"懒猫设备接力 Windows " LZC_MESH_VERSION L"\r\n设备 ID: " + widen(g.deviceId) + L"\r\n微服: " + widen(g.boxDomain) + L"\r\n";
     for (int i = 0; i < S_COUNT; i++) s += std::wstring(labels[i]) + L": " + g.status[i].text + L"\r\n";
+    HWND hLog = logWindow();
     int len = GetWindowTextLengthW(hLog);
     std::wstring log(len + 1, L'\0');
     GetWindowTextW(hLog, log.data(), len + 1);
@@ -305,7 +314,7 @@ void copyDiagnostics() {
 
 void applyBox() {
     wchar_t buf[128];
-    GetWindowTextW(hBox, buf, 128);
+    GetWindowTextW(boxEdit(), buf, 128);
     std::string name = narrow(buf);
     for (auto &c : name) c = (char)tolower((unsigned char)c);
     while (!name.empty() && name.back() == ' ') name.pop_back();
@@ -323,330 +332,128 @@ void applyBox() {
     startProbe();
 }
 
-// ------------------------------------------------------------------ layout control
-
-struct LayoutState {
-    double scale = 1, ox = 0, oy = 0;
-    int drag = -1;
-    POINT dragOffset{}, dragPos{};
-} L;
-
-void layoutCompute(RECT rc) {
-    if (g.devices.empty()) return;
-    double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
-    for (auto &d : g.devices) { x0 = std::min(x0, d.x); y0 = std::min(y0, d.y); x1 = std::max(x1, d.x + d.w); y1 = std::max(y1, d.y + d.h); }
-    double pad = S(20), W = rc.right - 2 * pad, H = rc.bottom - 2 * pad;
-    L.scale = std::min({W / ((x1 - x0) * 1.6), H / ((y1 - y0) * 1.6), 0.25 * dpi / 96});
-    L.ox = pad + (W - (x1 - x0) * L.scale) / 2 - x0 * L.scale;
-    L.oy = pad + (H - (y1 - y0) * L.scale) / 2 - y0 * L.scale;
+void setSharing(bool on) {
+    if (on == g.sharingEnabled) return;
+    g.sharingEnabled = on;
+    saveConfig();
+    input::setSharing(on);
+    // Give the cursor back at once if this PC is controlling another device.
+    if (!on && g.captured) hubws::send(JsonOut().s("t", "release").str());
+    hubws::send(JsonOut().s("t", "sharing").b("enabled", on).str());
+    logLine(on ? L"键鼠共享已开启" : L"键鼠共享已暂停");
+    mainwin::refresh();
+    tray::refresh();
 }
 
-RECT deviceRect(int i) {
-    auto &d = g.devices[i];
-    int x = (int)(L.ox + d.x * L.scale), y = (int)(L.oy + d.y * L.scale);
-    if (i == L.drag) x = L.dragPos.x, y = L.dragPos.y;
-    return RECT{x, y, x + (int)(d.w * L.scale), y + (int)(d.h * L.scale)};
+void setAutostart(bool on) {
+    if (!autostart::set(on)) logLine(L"设置开机启动失败：无法写入注册表");
+    else logLine(on ? L"已开启开机自动启动" : L"已关闭开机自动启动");
+    mainwin::refresh();
 }
 
-void layoutPaint(HWND h) {
-    PAINTSTRUCT ps;
-    HDC wdc = BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-    HDC dc = CreateCompatibleDC(wdc);
-    HBITMAP bmp = CreateCompatibleBitmap(wdc, rc.right, rc.bottom);
-    SelectObject(dc, bmp);
-    HBRUSH bg = CreateSolidBrush(RGB(248, 248, 248));
-    FillRect(dc, &rc, bg);
-    DeleteObject(bg);
-    for (int x = S(8); x < rc.right; x += S(16))
-        for (int y = S(8); y < rc.bottom; y += S(16)) SetPixel(dc, x, y, RGB(220, 220, 220));
-    SetBkMode(dc, TRANSPARENT);
-    if (g.devices.empty()) {
-        SelectObject(dc, font);
-        SetTextColor(dc, RGB(128, 128, 128));
-        DrawTextW(dc, g.hubConnected ? L"暂无设备" : L"连接设备接力中枢后显示屏幕布局", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    } else {
-        if (L.drag < 0) layoutCompute(rc);
-        for (int i = 0; i < (int)g.devices.size(); i++) {
-            auto &d = g.devices[i];
-            RECT r = deviceRect(i);
-            bool me = d.id == g.deviceId, active = d.id == g.activeSource || d.id == g.activeTarget;
-            int grey = active ? 18 : d.online ? 115 : 190;
-            HPEN pen = CreatePen(d.online ? PS_SOLID : PS_DOT, active ? S(2) + 1 : S(1) + (S(1) > 1 ? 0 : 1) - 1 + 1, RGB(grey, grey, grey));
-            HBRUSH fill = CreateSolidBrush(me ? RGB(236, 236, 236) : RGB(254, 254, 254));
-            SelectObject(dc, pen);
-            SelectObject(dc, fill);
-            RoundRect(dc, r.left, r.top, r.right, r.bottom, S(8), S(8));
-            DeleteObject(pen);
-            DeleteObject(fill);
-            const wchar_t *plat = d.platform == "macos" ? L"macOS" : d.platform == "windows" ? L"Windows" : d.platform == "linux" ? L"Linux" : L"?";
-            std::wstring title = widen(d.name) + (me ? L"（本机）" : L"");
-            std::wstring meta = fmt(L"%ls · %.0f×%.0f%ls", plat, d.w, d.h, d.online ? L"" : L" · 离线");
-            RECT t1 = r, t2 = r;
-            int mid = (r.top + r.bottom) / 2;
-            t1.bottom = mid; t2.top = mid;
-            InflateRect(&t1, -S(4), 0);
-            InflateRect(&t2, -S(4), 0);
-            SelectObject(dc, fontBold);
-            SetTextColor(dc, d.online ? RGB(17, 17, 17) : RGB(128, 128, 128));
-            DrawTextW(dc, title.c_str(), -1, &t1, DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
-            SelectObject(dc, fontSmall);
-            SetTextColor(dc, RGB(119, 119, 119));
-            DrawTextW(dc, meta.c_str(), -1, &t2, DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
-    }
-    BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-    EndPaint(h, &ps);
+void showWindow(HWND h) {
+    ShowWindow(h, IsIconic(h) ? SW_RESTORE : SW_SHOW);
+    SetForegroundWindow(h);
 }
 
-LRESULT CALLBACK layoutProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    switch (m) {
-    case WM_PAINT: layoutPaint(h); return 0;
-    case WM_ERASEBKGND: return 1;
-    case WM_LBUTTONDOWN: {
-        POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        if (!g.hubConnected) return 0;
-        for (int i = (int)g.devices.size() - 1; i >= 0; i--) {
-            RECT r = deviceRect(i);
-            if (PtInRect(&r, p)) {
-                L.drag = i;
-                L.dragPos = POINT{r.left, r.top};
-                L.dragOffset = POINT{p.x - r.left, p.y - r.top};
-                SetCapture(h);
-                break;
-            }
-        }
-        return 0;
-    }
-    case WM_MOUSEMOVE:
-        if (L.drag >= 0) {
-            L.dragPos = POINT{GET_X_LPARAM(l) - L.dragOffset.x, GET_Y_LPARAM(l) - L.dragOffset.y};
-            InvalidateRect(h, nullptr, FALSE);
-        }
-        return 0;
-    case WM_LBUTTONUP:
-        if (L.drag >= 0) {
-            ReleaseCapture();
-            if (L.drag < (int)g.devices.size()) {
-                auto &d = g.devices[L.drag];
-                hubws::send(JsonOut().s("t", "layout").s("id", d.id).n("x", (L.dragPos.x - L.ox) / L.scale).n("y", (L.dragPos.y - L.oy) / L.scale).str());
-            }
-            L.drag = -1;
-            InvalidateRect(h, nullptr, FALSE);
-        }
-        return 0;
-    }
-    return DefWindowProcW(h, m, w, l);
+void openManagement(HWND h) {
+    if (!g.boxDomain.empty()) ShellExecuteW(h, L"open", (L"https://lzc-mesh." + widen(g.boxDomain) + L"/").c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-// ------------------------------------------------------------------ main window
-
-HWND staticLabel(HWND parent, const wchar_t *text, HFONT f, int id = 0) {
-    HWND h = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 0, 0, 10, 10, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
-    SendMessageW(h, WM_SETFONT, (WPARAM)f, TRUE);
-    return h;
-}
-HWND buttonCtl(HWND parent, const wchar_t *text, int id, DWORD style = BS_PUSHBUTTON) {
-    HWND h = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | style, 0, 0, 10, 10, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
-    SendMessageW(h, WM_SETFONT, (WPARAM)font, TRUE);
-    return h;
+void quit(HWND h) {
+    quitting = true;
+    DestroyWindow(h);
 }
 
-HWND hKeyLabel[S_COUNT], hTitles[4], hHint, hBoxLabel, hButtons[6], hFileBtns[3];
-RECT dotRects[S_COUNT];
-
-void makeFonts() {
-    for (HFONT f : {font, fontBold, fontSmall, fontMono}) if (f) DeleteObject(f);
-    auto mk = [](int size, int weight, const wchar_t *face) {
-        return CreateFontW(-S(size), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, face);
-    };
-    font = mk(13, FW_NORMAL, L"Microsoft YaHei UI");
-    fontBold = mk(13, FW_SEMIBOLD, L"Microsoft YaHei UI");
-    fontSmall = mk(11, FW_NORMAL, L"Microsoft YaHei UI");
-    fontMono = mk(11, FW_NORMAL, L"Consolas");
-}
-
-void layoutControls(HWND h) {
-    RECT rc;
-    GetClientRect(h, &rc);
-    int pad = S(16), x = pad, y = pad, w = rc.right - 2 * pad;
-    MoveWindow(hTitles[0], x, y, w, S(20), TRUE);
-    y += S(26);
-    for (int i = 0; i < S_COUNT; i++) {
-        dotRects[i] = RECT{x, y + S(6), x + S(8), y + S(14)};
-        MoveWindow(hKeyLabel[i], x + S(16), y, S(110), S(20), TRUE);
-        MoveWindow(hStatusText[i], x + S(130), y, w - S(130), S(20), TRUE);
-        y += S(22);
-    }
-    y += S(4);
-    MoveWindow(hBoxLabel, x, y + S(3), S(80), S(20), TRUE);
-    MoveWindow(hBox, x + S(84), y, S(320), S(24), TRUE);
-    MoveWindow(hButtons[5], x + S(410), y, S(70), S(24), TRUE);
-    y += S(32);
-    int bx = x;
-    const int widths[] = {90, 110, 110, 70};
-    HWND btns[] = {hButtons[0], hOpenBtn, hButtons[2], hButtons[3]};
-    for (int i = 0; i < 4; i++) { MoveWindow(btns[i], bx, y, S(widths[i]), S(28), TRUE); bx += S(widths[i]) + S(8); }
-    MoveWindow(hPermBtn, bx, y, S(150), S(28), TRUE);
-    y += S(42);
-    MoveWindow(hTitles[1], x, y, w, S(20), TRUE);
-    y += S(24);
-    MoveWindow(hHint, x, y, w, S(18), TRUE);
-    y += S(22);
-    int logH = S(130);
-    int layoutH = std::max(S(160), (int)rc.bottom - y - S(30) - S(30) - logH - pad - S(172));
-    MoveWindow(hLayout, x, y, w, layoutH, TRUE);
-    y += layoutH + S(6);
-    MoveWindow(hSwap, x, y, w, S(22), TRUE);
-    y += S(30);
-    MoveWindow(hTitles[3], x, y, S(120), S(20), TRUE);
-    int fbx = x + w;
-    const int fw[] = {70, 70, 90};
-    for (int i = 2; i >= 0; i--) { fbx -= S(fw[i]); MoveWindow(hFileBtns[i], fbx, y - S(4), S(fw[i]), S(26), TRUE); fbx -= S(6); }
-    y += S(26);
-    files::layout(x, y, w, S(140), S(22));
-    y += S(146);
-    MoveWindow(hTitles[2], x, y, w, S(20), TRUE);
-    y += S(24);
-    MoveWindow(hLog, x, y, w, rc.bottom - y - pad, TRUE);
-    InvalidateRect(h, nullptr, TRUE);
-}
-
-void applyFonts() {
-    for (HWND c : hStatusText) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    for (HWND c : hKeyLabel) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    for (HWND c : hTitles) SendMessageW(c, WM_SETFONT, (WPARAM)fontBold, TRUE);
-    for (HWND c : hButtons) if (c) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    for (HWND c : {hHint, hBoxLabel, files::statusLabel()}) SendMessageW(c, WM_SETFONT, (WPARAM)fontSmall, TRUE);
-    for (HWND c : hFileBtns) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    for (HWND c : {hBox, hSwap, hPermBtn, hOpenBtn}) SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
-    SendMessageW(hLog, WM_SETFONT, (WPARAM)fontMono, TRUE);
-}
-
-void createControls(HWND h) {
-    makeFonts();
-    hTitles[0] = staticLabel(h, L"状态", fontBold);
-    for (int i = 0; i < S_COUNT; i++) {
-        hKeyLabel[i] = staticLabel(h, labels[i], font);
-        hStatusText[i] = staticLabel(h, g.status[i].text.c_str(), font, 200 + i);
-    }
-    hBoxLabel = staticLabel(h, L"使用的微服", fontSmall);
-    hBox = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", widen(g.boxOverride).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, h, nullptr, nullptr, nullptr);
-    SendMessageW(hBox, EM_SETCUEBANNER, TRUE, (LPARAM)L"留空使用懒猫客户端默认微服，例如 ponzs");
-    hButtons[5] = buttonCtl(h, L"应用", ID_BOX_APPLY);
-    hButtons[0] = buttonCtl(h, L"重新检测", ID_RETRY);
-    hOpenBtn = buttonCtl(h, L"打开管理页面", ID_OPEN);
-    hButtons[2] = buttonCtl(h, L"复制诊断信息", ID_COPY);
-    hButtons[3] = buttonCtl(h, L"退出", ID_QUIT);
-    hPermBtn = buttonCtl(h, L"以管理员身份运行", ID_ELEVATE);
-    ShowWindow(hPermBtn, SW_HIDE);
-    hTitles[1] = staticLabel(h, L"屏幕布局", fontBold);
-    hHint = staticLabel(h, L"拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Alt+Esc 收回光标。", fontSmall);
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = layoutProc;
-    wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"LzcMeshLayout";
-    wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
-    RegisterClassW(&wc);
-    hLayout = CreateWindowExW(0, wc.lpszClassName, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, h, nullptr, nullptr, nullptr);
-    hSwap = buttonCtl(h, L"Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl", ID_SWAP, BS_AUTOCHECKBOX);
-    SendMessageW(hSwap, BM_SETCHECK, BST_CHECKED, 0);
-    hTitles[3] = staticLabel(h, L"文件共享", fontBold);
-    hFileBtns[0] = buttonCtl(h, L"下载", ID_FILES_DOWNLOAD);
-    hFileBtns[1] = buttonCtl(h, L"删除", ID_FILES_DELETE);
-    hFileBtns[2] = buttonCtl(h, L"上传文件", ID_FILES_UPLOAD);
-    files::create(h, font);
-    hTitles[2] = staticLabel(h, L"事件日志", fontBold);
-    hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, h, nullptr, nullptr, nullptr);
-    SendMessageW(hLog, EM_SETLIMITTEXT, 0, 0);
-    applyFonts();
-    layoutControls(h);
-}
-
-HBRUSH bgBrush = CreateSolidBrush(RGB(245, 245, 245));
+HBRUSH editBrush = CreateSolidBrush(RGB(255, 255, 255));
 
 LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (taskbarCreated && m == taskbarCreated) { tray::onTaskbarCreated(h); return 0; }
+    if (quitMessage && m == quitMessage) { quit(h); return 0; }
     switch (m) {
     case WM_CREATE:
         g.hwnd = h;
-        dpi = GetDpiForWindow(h);
-        createControls(h);
+        mainwin::create(h);
         SetTimer(h, ID_TIMER, 3000, nullptr);
         SetTimer(h, ID_FG_TIMER, 1000, nullptr);
         clipboard::start(h);
         updateClipboardStatus();
+        taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+        quitMessage = RegisterWindowMessageW(L"LzcMeshQuit");
+        // Allow the (possibly lower-integrity) installer to send it.
+        ChangeWindowMessageFilterEx(h, quitMessage, MSGFLT_ALLOW, nullptr);
+        tray::add(h);
+        mainwin::refresh();
         return 0;
     case WM_DPICHANGED: {
-        dpi = HIWORD(w);
         RECT *r = (RECT *)l;
-        makeFonts();
-        applyFonts();
         SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        mainwin::onDpi(h);
         return 0;
     }
-    case WM_SIZE: layoutControls(h); return 0;
-    case WM_GETMINMAXINFO: ((MINMAXINFO *)l)->ptMinTrackSize = POINT{S(720), S(700)}; return 0;
+    case WM_SIZE: mainwin::layout(h); return 0;
+    case WM_GETMINMAXINFO: {
+        UINT d = GetDpiForWindow(h);
+        ((MINMAXINFO *)l)->ptMinTrackSize = POINT{MulDiv(900, d, 96), MulDiv(640, d, 96)};
+        return 0;
+    }
+    case WM_PAINT: mainwin::paint(h); return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_DRAWITEM: return ui::drawItem((DRAWITEMSTRUCT *)l) ? TRUE : FALSE;
+    case WM_CTLCOLOREDIT:
     case WM_CTLCOLORSTATIC: {
+        // Edit boxes (incl. the read-only log) on white with dark text.
         HDC dc = (HDC)w;
-        HWND c = (HWND)l;
-        SetBkMode(dc, TRANSPARENT);
-        int id = GetDlgCtrlID(c);
-        COLORREF col = RGB(17, 17, 17);
-        if (c == hHint || c == hBoxLabel || c == files::statusLabel()) col = RGB(119, 119, 119);
-        for (int i = 0; i < S_COUNT; i++) if (c == hKeyLabel[i]) col = RGB(85, 85, 85);
-        if (id >= 200 && id < 200 + S_COUNT && g.status[id - 200].level == L_ERROR) col = RGB(0, 0, 0);
-        if (c == hLog) { SetBkColor(dc, RGB(250, 250, 250)); SetTextColor(dc, RGB(51, 51, 51)); static HBRUSH lb = CreateSolidBrush(RGB(250, 250, 250)); return (LRESULT)lb; }
-        SetTextColor(dc, col);
-        return (LRESULT)bgBrush;
+        SetBkColor(dc, RGB(255, 255, 255));
+        SetTextColor(dc, (HWND)l == logWindow() ? RGB(64, 64, 64) : RGB(17, 17, 17));
+        return (LRESULT)editBrush;
     }
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC dc = BeginPaint(h, &ps);
-        for (int i = 0; i < S_COUNT; i++) {
-            Level lv = g.status[i].level;
-            COLORREF fill = lv == L_OK ? RGB(17, 17, 17) : lv == L_WARN ? RGB(136, 136, 136) : lv == L_ERROR ? RGB(255, 255, 255) : RGB(200, 200, 200);
-            HBRUSH b = CreateSolidBrush(fill);
-            HPEN p = CreatePen(PS_SOLID, lv == L_ERROR ? S(2) : 1, lv == L_ERROR ? RGB(17, 17, 17) : fill);
-            SelectObject(dc, b);
-            SelectObject(dc, p);
-            RECT r = dotRects[i];
-            Ellipse(dc, r.left, r.top, r.right, r.bottom);
-            DeleteObject(b);
-            DeleteObject(p);
-        }
-        EndPaint(h, &ps);
-        return 0;
-    }
-    case WM_ERASEBKGND: {
-        RECT rc;
-        GetClientRect(h, &rc);
-        FillRect((HDC)w, &rc, bgBrush);
-        return 1;
-    }
+    case WM_CLOSE:
+        // Closing the window keeps the client running in the tray.
+        if (!quitting) { ShowWindow(h, SW_HIDE); return 0; }
+        break;
     case WM_TIMER:
         if (w == ID_TIMER) startProbe();
         if (w == ID_FG_TIMER) checkForegroundIntegrity();
+        return 0;
+    case WM_SETTINGCHANGE:
+        if (l && wcscmp((const wchar_t *)l, L"ImmersiveColorSet") == 0) tray::onThemeChanged();
         return 0;
     case WM_DISPLAYCHANGE:
         updateScreenStatus();
         if (g.hubConnected) sendHello();
         return 0;
+    case WM_APP_TRAY:
+        switch (LOWORD(l)) {
+        case WM_LBUTTONUP:
+        case NIN_SELECT:
+        case NIN_KEYSELECT: showWindow(h); break;
+        case WM_CONTEXTMENU:
+        case WM_RBUTTONUP: tray::showMenu(h); break;
+        }
+        return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
         case ID_RETRY: logLine(L"手动重新检测"); g.cookie.clear(); serviceCheckedAt = 0; hubws::close(); startProbe(); break;
-        case ID_OPEN: if (!g.boxDomain.empty()) ShellExecuteW(h, L"open", (L"https://lzc-mesh." + widen(g.boxDomain) + L"/").c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ID_OPEN:
+        case tray::ID_TRAY_OPEN: openManagement(h); break;
         case ID_COPY: copyDiagnostics(); break;
-        case ID_QUIT: DestroyWindow(h); break;
         case ID_BOX_APPLY: applyBox(); break;
         case ID_ELEVATE: relaunchElevated(); break;
         case ID_FILES_UPLOAD: files::pickAndUpload(); break;
         case ID_FILES_DOWNLOAD: files::downloadSelected(); break;
         case ID_FILES_DELETE: files::deleteSelected(); break;
-        case ID_SWAP:
-            if (!updatingSwap) hubws::send(JsonOut().s("t", "settings").b("swap_cmd_ctrl", SendMessageW(hSwap, BM_GETCHECK, 0, 0) == BST_CHECKED).str());
+        case ID_SHARING:
+        case tray::ID_TRAY_SHARING: setSharing(!g.sharingEnabled); break;
+        case ID_AUTOSTART:
+        case tray::ID_TRAY_AUTOSTART: setAutostart(!autostart::enabled()); break;
+        case ID_SWAP: hubws::send(JsonOut().s("t", "settings").b("swap_cmd_ctrl", !g.swapCmdCtrl).str()); break;
+        case tray::ID_TRAY_CLIPBOARD: hubws::send(JsonOut().s("t", "settings").b("clipboard", !g.clipboardEnabled).str()); break;
+        case tray::ID_TRAY_SHOW: showWindow(h); break;
+        case tray::ID_TRAY_QUIT: quit(h); break;
+        case ID_BOX_EDIT:
+            // Repaint the frame around the edit when it gains / loses focus.
+            if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) InvalidateRect(h, nullptr, FALSE);
             break;
         }
         return 0;
@@ -677,6 +484,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         setStatus(S_HUB, L_OK, L"已连接");
         logLine(L"已连接设备接力中枢");
         sendHello();
+        tray::refresh();
         return 0;
     case WM_APP_HUB_TEXT: {
         std::string *s = (std::string *)l;
@@ -688,11 +496,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         std::wstring *s = (std::wstring *)l;
         onHubClosed((int)w, *s);
         delete s;
+        tray::refresh();
         return 0;
     }
     case WM_APP_EDGE: {
         static const char *dirs[] = {"left", "right", "up", "down"};
-        if (g.hubConnected && !g.captured && !g.controlled) hubws::send(JsonOut().s("t", "edge").s("dir", dirs[w & 3]).n("pos", l / 10000.0).str());
+        if (g.hubConnected && g.sharingEnabled && !g.captured && !g.controlled) hubws::send(JsonOut().s("t", "edge").s("dir", dirs[w & 3]).n("pos", l / 10000.0).str());
         return 0;
     }
     case WM_APP_INPUT:
@@ -700,11 +509,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == 0) setStatus(S_INPUT, L_ERROR, fmt(L"无法安装全局输入钩子（%lu），请以管理员身份运行或检查安全软件拦截", GetLastError()));
         else if (w == 2) {
             setStatus(S_INPUT, L_ERROR, fmt(L"系统拒绝注入输入（%lu）：可能处于锁屏/UAC 安全桌面，或前台是管理员窗口。点击“以管理员身份运行”", (DWORD)l));
-            ShowWindow(hPermBtn, SW_SHOW);
+            showElevate(true);
         }
-        if (input::isElevated()) ShowWindow(hPermBtn, SW_HIDE);
+        if (input::isElevated()) showElevate(false);
         return 0;
     case WM_DESTROY:
+        tray::remove();
         hubws::close();
         PostQuitMessage(0);
         return 0;
@@ -758,9 +568,9 @@ void setStatus(int key, Level level, const std::wstring &text) {
     s.text = text;
     static const wchar_t *lv[] = {L"..", L"ok", L"warn", L"ERROR"};
     fileLog(fmt(L"[status] %hs %ls: %ls", statusName(key), lv[level], text.c_str()));
-    if (hStatusText[key]) {
-        SetWindowTextW(hStatusText[key], text.c_str());
-        InvalidateRect(g.hwnd, &dotRects[key], TRUE);
+    if (g.hwnd) {
+        mainwin::refresh();
+        tray::refresh();
     }
 }
 
@@ -769,6 +579,7 @@ void logLine(const std::wstring &text) {
     GetLocalTime(&t);
     std::wstring line = fmt(L"%02d:%02d:%02d  %ls", t.wHour, t.wMinute, t.wSecond, text.c_str());
     fileLog(line);
+    HWND hLog = mainwin::logWindow();
     if (!hLog) return;
     int len = GetWindowTextLengthW(hLog);
     if (len > 60000) {
@@ -781,10 +592,8 @@ void logLine(const std::wstring &text) {
 }
 
 void devicesChanged() {
-    if (hLayout) InvalidateRect(hLayout, nullptr, FALSE);
-    updatingSwap = true;
-    SendMessageW(hSwap, BM_SETCHECK, g.swapCmdCtrl ? BST_CHECKED : BST_UNCHECKED, 0);
-    updatingSwap = false;
+    mainwin::refresh();
+    tray::refresh();
 }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
@@ -793,7 +602,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Hand over to an elevated relaunch: wait briefly for the old instance to quit.
         if (WaitForSingleObject(single, 3000) != WAIT_OBJECT_0 && WaitForSingleObject(single, 0) != WAIT_ABANDONED) {
-            if (HWND other = FindWindowW(L"LzcMeshMain", nullptr)) { ShowWindow(other, SW_RESTORE); SetForegroundWindow(other); }
+            // Second launch (e.g. Start menu while running in the tray): show the existing window.
+            if (HWND other = FindWindowW(L"LzcMeshMain", nullptr)) { ShowWindow(other, IsIconic(other) ? SW_RESTORE : SW_SHOW); SetForegroundWindow(other); }
             return 0;
         }
     }
@@ -813,12 +623,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     RegisterClassW(&wc);
     UINT sysDpi = GetDpiForSystem();
-    HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(900, sysDpi, 96),
-                             MulDiv(1000, sysDpi, 96), nullptr, nullptr, inst, nullptr);
+    bool background = wcsstr(GetCommandLineW(), L"--background") != nullptr;
+    // Default size fits every panel without scrolling, but never more than the work area.
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int ww = std::min(MulDiv(1240, sysDpi, 96), (int)(work.right - work.left) - MulDiv(40, sysDpi, 96));
+    int wh = std::min(MulDiv(880, sysDpi, 96), (int)(work.bottom - work.top) - MulDiv(40, sysDpi, 96));
+    HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh, nullptr, nullptr, inst, nullptr);
     logLine(L"懒猫设备接力 Windows " LZC_MESH_VERSION L" 启动，设备 ID " + widen(g.deviceId) + (input::isElevated() ? L"（管理员）" : L""));
     input::start();
+    input::setSharing(g.sharingEnabled);
     updateScreenStatus();
-    ShowWindow(h, show);
+    // Started at login: stay in the tray without opening the window.
+    if (!background) ShowWindow(h, show);
     startProbe();
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

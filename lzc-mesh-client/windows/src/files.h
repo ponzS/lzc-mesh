@@ -9,8 +9,10 @@
 // Shared files panel (Win32 list view + transfers on worker threads).
 namespace files {
 HWND create(HWND parent, HFONT font);
-HWND statusLabel();
-void layout(int x, int y, int w, int h, int statusH);
+void setFont(HFONT font);
+void layout(int x, int y, int w, int h);
+const std::wstring &status();   // last transfer message, painted by the window
+bool empty();
 void update(const std::vector<SharedFile> &files);
 void setStatusText(const std::wstring &text);
 void pickAndUpload();

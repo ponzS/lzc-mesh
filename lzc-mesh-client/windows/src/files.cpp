@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <uxtheme.h>
 #include <winhttp.h>
 
 #include <algorithm>
@@ -20,7 +21,8 @@
 
 namespace files {
 namespace {
-HWND list, status, parentWnd;
+HWND list, parentWnd;
+std::wstring statusText = L"所有设备都能下载；下载到“下载”文件夹，也可把文件拖到窗口上";
 std::vector<SharedFile> current;
 
 std::wstring escape(const std::wstring &name) {
@@ -163,9 +165,14 @@ int selected() { return list ? ListView_GetNextItem(list, -1, LVNI_SELECTED) : -
 
 HWND create(HWND parent, HFONT font) {
     parentWnd = parent;
-    list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0, 10, 10, parent,
+    // Flat list: no 3D border, no grid lines; the panel draws the frame.
+    list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 0, 0, 10, 10, parent,
                            (HMENU)(INT_PTR)ID_FILES_LIST, nullptr, nullptr);
     ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SetWindowTheme(list, L"Explorer", nullptr);
+    ListView_SetBkColor(list, RGB(255, 255, 255));
+    ListView_SetTextBkColor(list, RGB(255, 255, 255));
+    ListView_SetTextColor(list, RGB(17, 17, 17));
     const wchar_t *cols[] = {L"文件名", L"大小", L"来自", L"时间"};
     for (int i = 0; i < 4; i++) {
         LVCOLUMNW c{};
@@ -175,24 +182,28 @@ HWND create(HWND parent, HFONT font) {
         ListView_InsertColumn(list, i, &c);
     }
     SendMessageW(list, WM_SETFONT, (WPARAM)font, TRUE);
-    status = CreateWindowExW(0, L"STATIC", L"上传的文件所有设备都能下载；下载保存到“下载”文件夹。也可以把文件拖到窗口上。", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS,
-                             0, 0, 10, 10, parent, (HMENU)(INT_PTR)ID_FILES_STATUS, nullptr, nullptr);
+    ShowWindow(list, SW_HIDE);   // shown once there are files
     DragAcceptFiles(parent, TRUE);
     return list;
 }
 
-HWND statusLabel() { return status; }
+void setFont(HFONT font) { SendMessageW(list, WM_SETFONT, (WPARAM)font, TRUE); }
 
-void layout(int x, int y, int w, int h, int statusH) {
-    MoveWindow(list, x, y, w, h - statusH, TRUE);
-    MoveWindow(status, x, y + h - statusH + 2, w, statusH - 2, TRUE);
-    int nameW = std::max(120, w - 3 * (w / 7) - 6 * 4);
-    ListView_SetColumnWidth(list, 0, nameW);
-    for (int i = 1; i < 4; i++) ListView_SetColumnWidth(list, i, w / 7);
+const std::wstring &status() { return statusText; }
+
+bool empty() { return current.empty(); }
+
+void layout(int x, int y, int w, int h) {
+    MoveWindow(list, x, y, w, h, TRUE);
+    int other = MulDiv(w, 18, 100);
+    ListView_SetColumnWidth(list, 0, std::max(120, w - 3 * other - GetSystemMetrics(SM_CXVSCROLL)));
+    for (int i = 1; i < 4; i++) ListView_SetColumnWidth(list, i, other);
 }
 
 void update(const std::vector<SharedFile> &files) {
     current = files;
+    ShowWindow(list, files.empty() ? SW_HIDE : SW_SHOW);
+    InvalidateRect(parentWnd, nullptr, FALSE);
     ListView_DeleteAllItems(list);
     for (size_t i = 0; i < files.size(); i++) {
         const SharedFile &f = files[i];
@@ -217,7 +228,10 @@ void update(const std::vector<SharedFile> &files) {
     }
 }
 
-void setStatusText(const std::wstring &t) { SetWindowTextW(status, t.c_str()); }
+void setStatusText(const std::wstring &t) {
+    statusText = t;
+    InvalidateRect(parentWnd, nullptr, FALSE);
+}
 
 bool ready() {
     if (!g.hubConnected || g.boxDomain.empty()) {
