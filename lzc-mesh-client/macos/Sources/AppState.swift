@@ -23,6 +23,7 @@ struct MeshDevice {
     var id: String, name: String, platform: String, version: String
     var x: Double, y: Double, w: Double, h: Double
     var online: Bool
+    var sharing: Bool = true
 }
 
 /// Main-thread state shared by all components.
@@ -33,6 +34,8 @@ final class AppState {
     var status: [StatusKey: (Level, String)] = Dictionary(uniqueKeysWithValues: StatusKey.allCases.map { ($0, (.unknown, "检测中…")) })
     var deviceID: String
     var boxOverride: String
+    /// Keyboard/mouse sharing switched on (tray / settings switch). Persisted.
+    var sharingEnabled = true
 
     var boxName = "", boxDomain = "", loginUser = "", cookie = ""
     var hubConnected = false
@@ -74,11 +77,12 @@ final class AppState {
         if let data = try? Data(contentsOf: configURL), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { cfg = obj }
         deviceID = (cfg["device_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "macos-\(UUID().uuidString.lowercased())"
         boxOverride = cfg["box"] as? String ?? ""
+        sharingEnabled = cfg["sharing"] as? Bool ?? true
         save()
     }
 
     func save() {
-        let obj: [String: Any] = ["device_id": deviceID, "box": boxOverride]
+        let obj: [String: Any] = ["device_id": deviceID, "box": boxOverride, "sharing": sharingEnabled]
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: .prettyPrinted) { try? data.write(to: configURL) }
     }
 
@@ -98,6 +102,22 @@ final class AppState {
     }
 
     func deviceName(_ id: String?) -> String { devices.first { $0.id == id }?.name ?? id ?? "?" }
+
+    /// One-line connection summary for the header pill and the tray menu.
+    func summary() -> (Level, String) {
+        if hubConnected { return (.ok, "已连接 · \(devices.filter { $0.online }.count) 台设备在线") }
+        for k in [StatusKey.lzcClient, .lzcNetwork, .login, .service, .hub] {
+            if let (lv, t) = status[k], lv == .error || lv == .warn { return (lv, "\(k.label)：\(t)") }
+        }
+        return (.unknown, "正在连接…")
+    }
+
+    /// "正在控制 X" / "X 正在控制本机" while a control session is active.
+    func controlLine() -> String? {
+        if captured { return "正在控制 \(deviceName(activeTarget))" }
+        if controlled { return "\(deviceName(activeSource)) 正在控制本机" }
+        return nil
+    }
 
     func updateClipboardStatus() {
         if !hubConnected { set(.clipboard, .unknown, "等待连接中枢") }

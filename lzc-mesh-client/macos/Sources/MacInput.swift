@@ -22,6 +22,8 @@ final class MacInput {
     weak var hub: Hub?
     private var tap: CFMachPort?
     private var edges = [false, false, false, false]  // left right up down
+    /// Mirrors the tray switch: when off, no edge pushes are reported.
+    var sharingEnabled = true
     private var quietUntil = Date.distantPast
     private var lastEdge = Date.distantPast
     private var flags: UInt64 = 0           // modifier state of injected keys
@@ -118,7 +120,7 @@ final class MacInput {
 
     private func checkEdge(_ event: CGEvent) {
         let s = AppState.shared
-        guard s.hubConnected, !s.controlled, Date() > quietUntil, Date().timeIntervalSince(lastEdge) > 0.25 else { return }
+        guard sharingEnabled, s.hubConnected, !s.controlled, Date() > quietUntil, Date().timeIntervalSince(lastEdge) > 0.25 else { return }
         let b = MacInput.desktopBounds()
         let p = event.location
         let dx = event.getDoubleValueField(.mouseEventDeltaX), dy = event.getDoubleValueField(.mouseEventDeltaY)

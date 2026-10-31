@@ -8,18 +8,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let input = MacInput()
     let clipboard = Clipboard()
     var ui: MainWindow!
+    var bar: MenuBar!
     var timer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         ui = MainWindow()
-        state.onStatus = { [weak self] in self?.ui.refreshStatus() }
-        state.onDevices = { [weak self] in self?.ui.refreshLayout() }
+        bar = MenuBar()
+        state.onStatus = { [weak self] in self?.ui.refreshStatus(); self?.bar.refreshIcon() }
+        state.onDevices = { [weak self] in self?.ui.refreshLayout(); self?.bar.refreshIcon() }
         state.onLog = { [weak self] in self?.ui.appendLog($0) }
         hub.input = input
         hub.clipboard = clipboard
         clipboard.hub = hub
         state.onFiles = { [weak self] in self?.ui.filesView.update(AppState.shared.files) }
         input.hub = hub
+        input.sharingEnabled = state.sharingEnabled
         hub.onCookieRejected = { [weak self] in self?.lzc.invalidate() }
         lzc.onReady = { [weak self] ready, changed in
             guard let self = self else { return }
@@ -28,19 +31,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !ready && self.state.hubConnected { self.hub.disconnect() }
         }
         ui.layoutView.onMove = { [weak self] id, x, y in self?.hub.send(["t": "layout", "id": id, "x": x, "y": y]) }
-        ui.actions = [
-            "retry": { [weak self] in self?.state.log("手动重新检测"); self?.lzc.invalidate(); self?.hub.disconnect(); self?.lzc.refresh() },
-            "perm": { [weak self] in self?.input.requestPermissions() },
-            "settings": { MacInput.openSettings(AXIsProcessTrusted() ? "Privacy_ListenEvent" : "Privacy_Accessibility") },
+        let shared: [String: () -> Void] = [
+            "sharing": { [weak self] in self?.toggleSharing() },
+            "clipboard": { [weak self] in self?.hub.send(["t": "settings", "clipboard": !(self?.state.clipboardEnabled ?? false)]) },
+            "autostart": { [weak self] in self?.toggleAutostart() },
             "open": { [weak self] in
                 guard let d = self?.state.boxDomain, !d.isEmpty else { return }
                 NSWorkspace.shared.open(URL(string: "https://lzc-mesh.\(d)/")!)
             },
-            "copy": { [weak self] in self?.copyDiagnostics() },
+            "show": { [weak self] in self?.showWindow() },
             "quit": { NSApp.terminate(nil) },
-            "swap": { [weak self] in self?.hub.send(["t": "settings", "swap_cmd_ctrl": self?.ui.swap.state == .on]) },
-            "box": { [weak self] in self?.applyBox() },
         ]
+        ui.actions = shared.merging([
+            "retry": { [weak self] in self?.state.log("手动重新检测"); self?.lzc.invalidate(); self?.hub.disconnect(); self?.lzc.refresh() },
+            "perm": { [weak self] in self?.input.requestPermissions() },
+            "settings": { MacInput.openSettings(AXIsProcessTrusted() ? "Privacy_ListenEvent" : "Privacy_Accessibility") },
+            "copy": { [weak self] in self?.copyDiagnostics() },
+            "swap": { [weak self] in self?.hub.send(["t": "settings", "swap_cmd_ctrl": !(self?.state.swapCmdCtrl ?? true)]) },
+            "box": { [weak self] in self?.applyBox() },
+        ]) { a, _ in a }
+        bar.actions = shared
         state.log("懒猫设备接力 macOS \(AppState.version) 启动，设备 ID \(state.deviceID)")
         clipboard.start()
         updateScreen()
@@ -49,13 +59,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !input.permissions().ok { input.requestPermissions() }
         input.refreshPermissionStatus()
         ui.refreshStatus()
-        ui.window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        ui.refreshSettings()
+        // Started at login: stay in the menu bar without opening a window.
+        if !CommandLine.arguments.contains("--background") { showWindow() }
         lzc.refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.lzc.refresh()
             self?.input.refreshPermissionStatus()
         }
+    }
+
+    func showWindow() {
+        ui.window.makeKeyAndOrderFront(nil)
+        ui.window.makeFirstResponder(nil)   // don't open with a blinking cursor in the box field
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func toggleSharing() {
+        state.sharingEnabled.toggle()
+        state.save()
+        input.sharingEnabled = state.sharingEnabled
+        // Give the cursor back at once if this Mac is controlling another device.
+        if !state.sharingEnabled && state.captured { hub.send(["t": "release"]) }
+        hub.send(["t": "sharing", "enabled": state.sharingEnabled])
+        state.log(state.sharingEnabled ? "键鼠共享已开启" : "键鼠共享已暂停")
+        ui.refreshSettings()
+        bar.refreshIcon()
+    }
+
+    func toggleAutostart() {
+        if let err = LoginItem.set(!LoginItem.isEnabled) { state.log("设置开机启动失败：\(err)") }
+        else { state.log(LoginItem.isEnabled ? "已开启开机自动启动" : "已关闭开机自动启动") }
+        ui.refreshSettings()
     }
 
     func updateScreen() {
@@ -69,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applyBox() {
-        var name = ui.boxField.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        var name = ui.boxText.trimmingCharacters(in: .whitespaces).lowercased()
         if name.hasSuffix(".heiyu.space") { name = String(name.dropLast(".heiyu.space".count)) }
         guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { state.log("微服名只能包含字母、数字和 -"); return }
         state.boxOverride = name
@@ -90,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        ui.window.makeKeyAndOrderFront(nil)
+        showWindow()
         return true
     }
 
@@ -103,7 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+// Menu bar app: no Dock icon. The window opens from the menu bar item.
+app.setActivationPolicy(.accessory)
 let menu = NSMenu()
 let appItem = NSMenuItem()
 menu.addItem(appItem)

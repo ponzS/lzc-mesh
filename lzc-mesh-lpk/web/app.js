@@ -83,7 +83,7 @@ function render() {
       el.addEventListener("pointerdown", startDrag)
       stage.appendChild(el)
     }
-    const activeRole = state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : ""
+    const activeRole = state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : d.online && d.sharing === false ? "已暂停" : ""
     el.classList.toggle("offline", !d.online)
     el.classList.toggle("active", !!activeRole)
     el.querySelector(".name").textContent = d.name
@@ -107,7 +107,7 @@ function renderList() {
     const info = document.createElement("div")
     info.innerHTML = `<div></div><div class="meta"></div>`
     info.children[0].textContent = d.name
-    info.children[1].textContent = `${PLATFORM[d.platform] || d.platform} · ${d.online ? "在线" : "离线"}${d.version ? " · v" + d.version : ""}`
+    info.children[1].textContent = `${PLATFORM[d.platform] || d.platform} · ${d.online ? (d.sharing === false ? "在线 · 已暂停键鼠共享" : "在线") : "离线"}${d.version ? " · v" + d.version : ""}`
     li.appendChild(info)
     if (!d.online) {
       const btn = document.createElement("button")

@@ -28,6 +28,8 @@ struct Conn {
     /// Device id, or None for a layout viewer (web page).
     device: Option<String>,
     tx: Tx,
+    /// Keyboard/mouse sharing switched on in the client (tray switch).
+    sharing: bool,
 }
 
 struct Active {
@@ -86,7 +88,7 @@ fn norm(d: &Device, x: f64, y: f64) -> (f64, f64) {
 impl Room {
     pub fn attach(&mut self, conn: u64, tx: Tx) {
         let _ = tx.send(HubMsg::Welcome { id: String::new(), user: self.user.clone() });
-        self.conns.insert(conn, Conn { device: None, tx });
+        self.conns.insert(conn, Conn { device: None, tx, sharing: true });
         self.broadcast();
     }
 
@@ -123,6 +125,15 @@ impl Room {
             ClientMsg::Ping => self.reply(conn, HubMsg::Pong),
             ClientMsg::Layout { id, x, y } => self.move_device(&id, x, y),
             ClientMsg::Forget { id } => self.forget(conn, &id),
+            ClientMsg::Sharing { enabled } => {
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.sharing = enabled;
+                }
+                if let (false, Some(id)) = (enabled, device.as_deref()) {
+                    self.drop_device_from_active(id);
+                }
+                self.broadcast();
+            }
             ClientMsg::Settings { swap_cmd_ctrl, clipboard } => {
                 if let Some(v) = swap_cmd_ctrl {
                     self.snapshot.settings.swap_cmd_ctrl = v;
@@ -223,13 +234,20 @@ impl Room {
         }
     }
 
+    /// Devices that are online and take part in keyboard/mouse sharing.
     fn online(&self) -> impl Iterator<Item = &Device> + Clone {
-        let online: HashSet<&str> = self.conns.values().filter_map(|c| c.device.as_deref()).collect();
-        self.snapshot.devices.values().filter(move |d| online.contains(d.id.as_str()))
+        let sharing = self.sharing_ids();
+        self.snapshot.devices.values().filter(move |d| sharing.contains(d.id.as_str()))
+    }
+
+    fn sharing_ids(&self) -> HashSet<&str> {
+        // A device is paused only when all of its connections have sharing off.
+        self.conns.values().filter(|c| c.sharing).filter_map(|c| c.device.as_deref()).collect()
     }
 
     fn broadcast(&self) {
         let online: HashSet<&str> = self.conns.values().filter_map(|c| c.device.as_deref()).collect();
+        let sharing = self.sharing_ids();
         let devices: Vec<DeviceView> = self
             .snapshot
             .devices
@@ -243,6 +261,7 @@ impl Room {
                 x: d.x,
                 y: d.y,
                 online: online.contains(d.id.as_str()),
+                sharing: sharing.contains(d.id.as_str()),
                 version: d.version.clone(),
             })
             .collect();
@@ -252,7 +271,7 @@ impl Room {
             let _ = c.tx.send(state.clone());
             if let Some(id) = &c.device {
                 if let Some(me) = self.snapshot.devices.get(id) {
-                    let [left, right, up, down] = layout::edges(self.online(), me);
+                    let [left, right, up, down] = if c.sharing { layout::edges(self.online(), me) } else { [false; 4] };
                     let _ = c.tx.send(HubMsg::Edges { left, right, up, down });
                 }
             }
@@ -348,7 +367,7 @@ impl Room {
     }
 
     fn edge(&mut self, from: &str, dir: Dir, pos: f64) {
-        if self.active.is_some() {
+        if self.active.is_some() || !self.sharing_ids().contains(from) {
             return;
         }
         let Some(src) = self.snapshot.devices.get(from).cloned() else { return };
@@ -554,5 +573,32 @@ mod clipboard_tests {
         r.handle(1, ClientMsg::Clipboard { text: "hello".into() });
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
+    }
+}
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+
+    #[test]
+    fn paused_device_is_skipped_and_cannot_start_control() {
+        let mut r = super::tests_support::room();
+        let mut mac = super::tests_support::hello(&mut r, 1, "mac", Platform::Macos, 1470.0, 956.0);
+        let mut win = super::tests_support::hello(&mut r, 2, "win", Platform::Windows, 1707.0, 960.0);
+        r.handle(2, ClientMsg::Layout { id: "win".into(), x: 0.0, y: -960.0 });
+        // Windows pauses sharing: the Mac can no longer push the cursor into it.
+        r.handle(2, ClientMsg::Sharing { enabled: false });
+        r.handle(1, ClientMsg::Edge { dir: Dir::Up, pos: 0.5 });
+        assert!(r.active.is_none());
+        // ...and pausing while being controlled ends control at once.
+        r.handle(2, ClientMsg::Sharing { enabled: true });
+        r.handle(1, ClientMsg::Edge { dir: Dir::Up, pos: 0.5 });
+        assert!(r.active.is_some());
+        super::tests_support::drain(&mut mac);
+        super::tests_support::drain(&mut win);
+        r.handle(2, ClientMsg::Sharing { enabled: false });
+        assert!(r.active.is_none());
+        assert!(super::tests_support::drain(&mut win).iter().any(|m| matches!(m, HubMsg::Leave)));
+        assert!(super::tests_support::drain(&mut mac).iter().any(|m| matches!(m, HubMsg::Release { .. })));
     }
 }

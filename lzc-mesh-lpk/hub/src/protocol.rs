@@ -53,6 +53,9 @@ pub enum ClientMsg {
     Layout { id: String, x: f64, y: f64 },
     /// Remove an offline device from the layout.
     Forget { id: String },
+    /// Pause or resume keyboard/mouse sharing for this device (tray switch). A paused
+    /// device stays online for clipboard, files and layout but never takes part in control.
+    Sharing { enabled: bool },
     /// Partial settings update from the layout page; omitted fields keep their value.
     Settings {
         #[serde(default)]
@@ -75,6 +78,8 @@ pub struct DeviceView {
     pub x: f64,
     pub y: f64,
     pub online: bool,
+    /// Online and taking part in keyboard/mouse sharing.
+    pub sharing: bool,
     pub version: String,
 }
 

@@ -106,7 +106,11 @@ final class Lzc {
         }
         p.login = (.ok, "已获取 \(p.boxDomain) 的登录会话")
         if !checkService { return p }
-        let (who, whoErr) = Lzc.getJSON("https://lzc-mesh.\(p.boxDomain)/api/whoami", headers: ["Cookie": "Lzc-Auth-Token=\(p.cookie)"])
+        // The first request through the LazyCat network can be slow (route setup); retry once on a timeout.
+        var (who, whoErr) = Lzc.getJSON("https://lzc-mesh.\(p.boxDomain)/api/whoami", headers: ["Cookie": "Lzc-Auth-Token=\(p.cookie)"])
+        if who == nil, whoErr?.contains("timed out") == true || whoErr?.contains("Could not connect") == true {
+            (who, whoErr) = Lzc.getJSON("https://lzc-mesh.\(p.boxDomain)/api/whoami", headers: ["Cookie": "Lzc-Auth-Token=\(p.cookie)"])
+        }
         if let w = who as? [String: Any] {
             p.service = (.ok, "lzc-mesh.\(p.boxDomain) · 版本 \(w["version"] as? String ?? "?")")
         } else {

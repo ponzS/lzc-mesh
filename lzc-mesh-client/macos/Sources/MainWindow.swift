@@ -1,233 +1,263 @@
-// Main window: status of every dependency, permission actions, the layout
-// editor and a live event log. Black/white/grey AppKit UI.
+// Main window: header with live connection status and the sharing switch, then two
+// columns. Left: screen layout and shared files. Right: connection status, settings
+// and the event log. Black / white / grey, same look as the management page.
 import AppKit
-
-final class LayoutView: NSView {
-    var onMove: ((String, Double, Double) -> Void)?
-    private var scale = 1.0, ox = 0.0, oy = 0.0
-    private var dragIndex: Int?
-    private var dragOffset = CGPoint.zero, dragOrigin = CGPoint.zero
-
-    override var isFlipped: Bool { true }
-
-    private func compute() {
-        let ds = AppState.shared.devices
-        guard !ds.isEmpty else { return }
-        let x0 = ds.map { $0.x }.min()!, y0 = ds.map { $0.y }.min()!
-        let x1 = ds.map { $0.x + $0.w }.max()!, y1 = ds.map { $0.y + $0.h }.max()!
-        let pad = 24.0, W = bounds.width - 2 * pad, H = bounds.height - 2 * pad
-        scale = min(W / ((x1 - x0) * 1.6), H / ((y1 - y0) * 1.6), 0.25)
-        ox = pad + (W - (x1 - x0) * scale) / 2 - x0 * scale
-        oy = pad + (H - (y1 - y0) * scale) / 2 - y0 * scale
-    }
-
-    private func rect(_ i: Int) -> CGRect {
-        let d = AppState.shared.devices[i]
-        if i == dragIndex { return CGRect(x: dragOrigin.x, y: dragOrigin.y, width: d.w * scale, height: d.h * scale) }
-        return CGRect(x: ox + d.x * scale, y: oy + d.y * scale, width: d.w * scale, height: d.h * scale)
-    }
-
-    override func draw(_ dirty: NSRect) {
-        NSColor(white: 0.97, alpha: 1).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
-        NSColor(white: 0.88, alpha: 1).setFill()
-        for x in stride(from: 8.0, to: bounds.width, by: 16) { for y in stride(from: 8.0, to: bounds.height, by: 16) { NSRect(x: x, y: y, width: 1, height: 1).fill() } }
-        let s = AppState.shared
-        let para = NSMutableParagraphStyle()
-        para.alignment = .center
-        para.lineBreakMode = .byTruncatingTail
-        if s.devices.isEmpty {
-            let t = s.hubConnected ? "暂无设备" : "连接设备接力中枢后显示屏幕布局"
-            (t as NSString).draw(in: bounds.insetBy(dx: 0, dy: bounds.height / 2 - 10),
-                                 withAttributes: [.foregroundColor: NSColor.gray, .paragraphStyle: para, .font: NSFont.systemFont(ofSize: 12)])
-            return
-        }
-        if dragIndex == nil { compute() }
-        for (i, d) in s.devices.enumerated() {
-            let r = rect(i)
-            let me = d.id == s.deviceID
-            let active = d.id == s.activeSource || d.id == s.activeTarget
-            let path = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5)
-            NSColor(white: me ? 0.92 : 1, alpha: 1).setFill()
-            path.fill()
-            NSColor(white: active ? 0.07 : d.online ? 0.45 : 0.75, alpha: 1).setStroke()
-            path.lineWidth = active ? 2.5 : 1.5
-            if !d.online { path.setLineDash([4, 3], count: 2, phase: 0) }
-            path.stroke()
-            let plat = ["macos": "macOS", "windows": "Windows", "linux": "Linux"][d.platform] ?? d.platform
-            let title = NSMutableAttributedString(string: d.name + (me ? "（本机）" : "") + "\n",
-                                                  attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor(white: d.online ? 0.07 : 0.5, alpha: 1), .paragraphStyle: para])
-            title.append(NSAttributedString(string: "\(plat) · \(Int(d.w))×\(Int(d.h))\(d.online ? "" : " · 离线")",
-                                            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.gray, .paragraphStyle: para]))
-            let th = title.boundingRect(with: CGSize(width: r.width - 8, height: r.height), options: [.usesLineFragmentOrigin]).height
-            title.draw(with: CGRect(x: r.minX + 4, y: r.midY - th / 2, width: r.width - 8, height: th), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-        }
-    }
-
-    override func mouseDown(with e: NSEvent) {
-        let p = convert(e.locationInWindow, from: nil)
-        guard AppState.shared.hubConnected else { return }
-        for i in AppState.shared.devices.indices.reversed() where rect(i).contains(p) {
-            dragIndex = i
-            dragOrigin = rect(i).origin
-            dragOffset = CGPoint(x: p.x - dragOrigin.x, y: p.y - dragOrigin.y)
-            return
-        }
-    }
-
-    override func mouseDragged(with e: NSEvent) {
-        guard dragIndex != nil else { return }
-        let p = convert(e.locationInWindow, from: nil)
-        dragOrigin = CGPoint(x: p.x - dragOffset.x, y: p.y - dragOffset.y)
-        needsDisplay = true
-    }
-
-    override func mouseUp(with e: NSEvent) {
-        guard let i = dragIndex, i < AppState.shared.devices.count else { dragIndex = nil; return }
-        let d = AppState.shared.devices[i]
-        onMove?(d.id, (dragOrigin.x - ox) / scale, (dragOrigin.y - oy) / scale)
-        dragIndex = nil
-        needsDisplay = true
-    }
-}
 
 final class MainWindow: NSObject, NSWindowDelegate {
     let window: NSWindow
-    private var dots: [StatusKey: NSView] = [:]
-    private var texts: [StatusKey: NSTextField] = [:]
     let layoutView = LayoutView()
     let filesView = FilesView()
-    let swap = NSButton(checkboxWithTitle: "Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl", target: nil, action: nil)
-    let boxField = NSTextField()
-    let logView = NSTextView()
-    let permButton = NSButton(title: "请求系统权限", target: nil, action: nil)
     var actions: [String: () -> Void] = [:]
 
+    private var dots: [StatusKey: StatusDot] = [:]
+    private var texts: [StatusKey: NSTextField] = [:]
+    private let pillDot = StatusDot()
+    private let pillText = makeLabel("正在连接…", size: 12, color: Theme.muted)
+    private let controlText = makeLabel("", size: 12, weight: .medium)
+    private let sharingSwitch = ToggleSwitch()
+    private let swapSwitch = ToggleSwitch()
+    private let autostartSwitch = ToggleSwitch()
+    private let boxField = NSTextField()
+    private let logView = NSTextView()
+    private var permRow: NSView!
+
+    // MARK: setup
+
     override init() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 980), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 700),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
         window.title = "懒猫设备接力"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = NSColor(white: 0.96, alpha: 1)
+        window.backgroundColor = Theme.bg
+        window.minSize = NSSize(width: 860, height: 560)
+        window.setFrameAutosaveName("LZCMeshMain")
         build()
-        window.center()
+        if !window.setFrameUsingName("LZCMeshMain") { window.center() }
     }
 
-    private func label(_ s: String, size: CGFloat = 12, color: NSColor = .labelColor, bold: Bool = false) -> NSTextField {
-        let l = NSTextField(wrappingLabelWithString: s)
-        l.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
-        l.textColor = color
-        l.isSelectable = true
-        return l
-    }
-
-    private func card(_ title: String, _ views: [NSView]) -> NSView {
-        let box = NSStackView(views: [label(title, size: 13, bold: true)] + views)
-        box.orientation = .vertical
-        box.alignment = .leading
-        box.spacing = 8
-        box.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
-        box.wantsLayer = true
-        box.layer?.backgroundColor = NSColor.white.cgColor
-        box.layer?.cornerRadius = 10
-        box.layer?.borderWidth = 1
-        box.layer?.borderColor = NSColor(white: 0.88, alpha: 1).cgColor
-        for v in views { v.translatesAutoresizingMaskIntoConstraints = false; v.widthAnchor.constraint(equalTo: box.widthAnchor, constant: -28).isActive = true }
-        return box
-    }
-
-    private func button(_ title: String, _ key: String) -> NSButton {
-        let b = NSButton(title: title, target: self, action: #selector(clicked(_:)))
+    private func button(_ title: String, _ key: String, primary: Bool = false) -> FlatButton {
+        let b = FlatButton(title: title, primary: primary, target: self, action: #selector(clicked(_:)))
         b.identifier = NSUserInterfaceItemIdentifier(key)
-        b.bezelStyle = .rounded
         return b
     }
 
     @objc private func clicked(_ b: NSButton) { actions[b.identifier?.rawValue ?? ""]?() }
+    @objc private func toggled(_ s: ToggleSwitch) { actions[s.identifier?.rawValue ?? ""]?() }
+
+    private func titled(_ title: String, _ content: NSView, trailing: NSView? = nil) -> Panel {
+        let p = Panel()
+        let head = NSStackView(views: [makeLabel(title, size: 13, weight: .semibold)] + (trailing.map { [NSView(), $0] } ?? []))
+        head.spacing = 8
+        let stack = NSStackView(views: [head, content])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        p.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: p.topAnchor, constant: 14), stack.bottomAnchor.constraint(equalTo: p.bottomAnchor, constant: -14),
+            stack.leadingAnchor.constraint(equalTo: p.leadingAnchor, constant: 14), stack.trailingAnchor.constraint(equalTo: p.trailingAnchor, constant: -14),
+            head.widthAnchor.constraint(equalTo: stack.widthAnchor), content.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+        return p
+    }
+
+    private func settingRow(_ title: String, _ detail: String?, _ toggle: ToggleSwitch, key: String) -> NSView {
+        toggle.identifier = NSUserInterfaceItemIdentifier(key)
+        toggle.target = self
+        toggle.action = #selector(toggled(_:))
+        let texts = NSStackView(views: [makeLabel(title, size: 12)] + (detail.map { [makeLabel($0, size: 11, color: Theme.muted, lines: 2)] } ?? []))
+        texts.orientation = .vertical
+        texts.alignment = .leading
+        texts.spacing = 2
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [texts, spacer, toggle])
+        row.alignment = .top
+        row.spacing = 12
+        return row
+    }
 
     private func build() {
+        // Header
+        let title = makeLabel("懒猫设备接力", size: 15, weight: .semibold)
+        let pill = NSStackView(views: [pillDot, pillText])
+        pill.spacing = 7
+        pill.alignment = .centerY
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sharingSwitch.identifier = NSUserInterfaceItemIdentifier("sharing")
+        sharingSwitch.target = self
+        sharingSwitch.action = #selector(toggled(_:))
+        let sharingLabel = makeLabel("键鼠共享", size: 12, weight: .medium)
+        let header = NSStackView(views: [title, pill, controlText, spacer, sharingLabel, sharingSwitch])
+        header.spacing = 14
+        header.alignment = .centerY
+        header.edgeInsets = NSEdgeInsets(top: 0, left: 84, bottom: 0, right: 24)
+
+        // Left column: layout + files
+        let layoutHint = makeLabel("拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Option+Esc 收回光标。", size: 11, color: Theme.muted, lines: 2)
+        layoutView.translatesAutoresizingMaskIntoConstraints = false
+        let layoutBox = NSStackView(views: [layoutHint, layoutView])
+        layoutBox.orientation = .vertical
+        layoutBox.alignment = .leading
+        layoutBox.spacing = 8
+        layoutHint.widthAnchor.constraint(equalTo: layoutBox.widthAnchor).isActive = true
+        layoutView.widthAnchor.constraint(equalTo: layoutBox.widthAnchor).isActive = true
+        layoutView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        let layoutPanel = titled("屏幕布局", layoutBox)
+        filesView.translatesAutoresizingMaskIntoConstraints = false
+        let filesPanel = titled("文件共享", filesView)
+        let left = NSStackView(views: [layoutPanel, filesPanel])
+        left.orientation = .vertical
+        left.spacing = 14
+        layoutPanel.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
+        filesPanel.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
+        layoutPanel.setContentHuggingPriority(.defaultLow, for: .vertical)
+        filesPanel.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+
+        // Right column: status, settings, log
         let grid = NSGridView()
-        grid.rowSpacing = 6
-        grid.columnSpacing = 10
+        grid.rowSpacing = 7
+        grid.columnSpacing = 9
         for k in StatusKey.allCases {
-            let dot = NSView()
-            dot.wantsLayer = true
-            dot.layer?.cornerRadius = 4
-            dot.translatesAutoresizingMaskIntoConstraints = false
-            dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
-            dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
-            let text = label("检测中…")
+            let dot = StatusDot()
+            let text = makeLabel("检测中…", size: 12, lines: 3)
+            text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             dots[k] = dot
             texts[k] = text
-            grid.addRow(with: [dot, label(k.label, color: .darkGray), text])
+            // The dot sits in a wrapper whose top inset lines it up with the first text line.
+            let slot = NSView()
+            dot.translatesAutoresizingMaskIntoConstraints = false
+            slot.addSubview(dot)
+            NSLayoutConstraint.activate([
+                dot.centerXAnchor.constraint(equalTo: slot.centerXAnchor), dot.topAnchor.constraint(equalTo: slot.topAnchor, constant: 4),
+                dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8),
+            ])
+            grid.addRow(with: [slot, makeLabel(k.label, size: 12, color: Theme.muted), text])
         }
         grid.column(at: 0).xPlacement = .center
-        grid.rowAlignment = .firstBaseline
-        for r in 0..<grid.numberOfRows { grid.row(at: r).yPlacement = .center }
-        grid.column(at: 2).width = 560
+        grid.column(at: 0).width = 10
+        grid.column(at: 1).width = 84
+        for r in 0..<grid.numberOfRows { grid.row(at: r).yPlacement = .top }
+        let permBtn = button("请求系统权限", "perm", primary: true)
+        let permSettings = button("打开权限设置", "settings")
+        let permBar = NSStackView(views: [permBtn, permSettings])
+        permBar.spacing = 8
+        permRow = permBar
+        let retry = button("重新检测", "retry"), open = button("打开管理页面", "open"), copy = button("复制诊断信息", "copy")
+        let bar = NSStackView(views: [retry, open, copy])
+        bar.spacing = 8
+        let statusStack = NSStackView(views: [grid, permBar, bar])
+        statusStack.orientation = .vertical
+        statusStack.alignment = .leading
+        statusStack.spacing = 10
+        grid.widthAnchor.constraint(equalTo: statusStack.widthAnchor).isActive = true
+        let statusPanel = titled("连接状态", statusStack)
 
-        boxField.placeholderString = "留空使用懒猫客户端默认微服，例如 ponzs"
+        boxField.placeholderString = "默认使用懒猫客户端的微服，例如 ponzs"
         boxField.stringValue = AppState.shared.boxOverride
-        let boxRow = NSStackView(views: [label("使用的微服", color: .darkGray), boxField, button("应用", "box")])
+        boxField.font = Theme.font(12)
+        boxField.bezelStyle = .roundedBezel
+        boxField.focusRingType = .none
+        let boxRow = NSStackView(views: [boxField, button("应用", "box")])
         boxRow.spacing = 8
-        permButton.target = self
-        permButton.action = #selector(clicked(_:))
-        permButton.identifier = NSUserInterfaceItemIdentifier("perm")
-        permButton.bezelStyle = .rounded
-        let actionsRow = NSStackView(views: [button("重新检测", "retry"), permButton, button("打开权限设置", "settings"),
-                                             button("打开管理页面", "open"), button("复制诊断信息", "copy"), button("退出", "quit")])
-        actionsRow.spacing = 8
-
-        let hint = label("拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Option+Esc 收回光标。", size: 11, color: .gray)
-        layoutView.translatesAutoresizingMaskIntoConstraints = false
-        layoutView.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
-        swap.target = self
-        swap.action = #selector(clicked(_:))
-        swap.identifier = NSUserInterfaceItemIdentifier("swap")
+        let boxCol = NSStackView(views: [makeLabel("使用的微服", size: 12), boxRow])
+        boxCol.orientation = .vertical
+        boxCol.alignment = .leading
+        boxCol.spacing = 5
+        boxRow.widthAnchor.constraint(equalTo: boxCol.widthAnchor).isActive = true
+        let settingsStack = NSStackView(views: [
+            settingRow("开机自动启动", "登录系统后自动在菜单栏运行", autostartSwitch, key: "autostart"),
+            settingRow("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", swapSwitch, key: "swap"),
+            boxCol,
+        ])
+        settingsStack.orientation = .vertical
+        settingsStack.alignment = .leading
+        settingsStack.spacing = 12
+        for v in settingsStack.arrangedSubviews { v.widthAnchor.constraint(equalTo: settingsStack.widthAnchor).isActive = true }
+        let settingsPanel = titled("设置", settingsStack)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
+        scroll.drawsBackground = false
         logView.isEditable = false
-        logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        logView.backgroundColor = NSColor(white: 0.98, alpha: 1)
-        logView.textColor = NSColor(white: 0.2, alpha: 1)
+        logView.drawsBackground = false
+        logView.font = Theme.mono(11)
+        logView.textColor = NSColor(white: 0.25, alpha: 1)
+        logView.textContainerInset = NSSize(width: 0, height: 2)
         logView.autoresizingMask = [.width]
         scroll.documentView = logView
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: 100).isActive = true
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
+        let logPanel = titled("事件日志", scroll)
 
-        filesView.translatesAutoresizingMaskIntoConstraints = false
-        let root = NSStackView(views: [card("状态", [grid, boxRow, actionsRow]), card("屏幕布局", [hint, layoutView, swap]),
-                                       card("文件共享", [filesView]), card("事件日志", [scroll])])
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        root.setHuggingPriority(.defaultLow, for: .vertical)
-        for v in root.arrangedSubviews { v.translatesAutoresizingMaskIntoConstraints = false; v.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true }
-        window.contentView = root
+        let right = NSStackView(views: [statusPanel, settingsPanel, logPanel])
+        right.orientation = .vertical
+        right.spacing = 14
+        for p in [statusPanel, settingsPanel, logPanel] { p.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true }
+        logPanel.setContentHuggingPriority(.defaultLow, for: .vertical)
+
+        let columns = NSStackView(views: [left, right])
+        columns.spacing = 14
+        columns.alignment = .top
+        columns.distribution = .fill
+        left.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        left.heightAnchor.constraint(equalTo: columns.heightAnchor).isActive = true
+        right.heightAnchor.constraint(equalTo: columns.heightAnchor).isActive = true
+        right.widthAnchor.constraint(equalToConstant: 380).isActive = true
+        columns.edgeInsets = NSEdgeInsets(top: 0, left: 24, bottom: 24, right: 24)
+
+        let content = NSView()
+        for v in [header, columns] { v.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(v) }
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), header.heightAnchor.constraint(equalToConstant: 44),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor), header.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            columns.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6), columns.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            columns.leadingAnchor.constraint(equalTo: content.leadingAnchor), columns.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+        ])
+        window.contentView = content
+        refreshStatus()
     }
+
+    // MARK: updates
 
     func refreshStatus() {
         let s = AppState.shared
         for k in StatusKey.allCases {
             let (level, text) = s.status[k] ?? (.unknown, "")
-            let layer = dots[k]?.layer
-            layer?.borderWidth = level == .error ? 2 : 0
-            layer?.borderColor = NSColor.black.cgColor
-            layer?.backgroundColor = (level == .ok ? NSColor.black : level == .warn ? NSColor.gray : level == .error ? NSColor.white : NSColor(white: 0.8, alpha: 1)).cgColor
+            dots[k]?.level = level
             texts[k]?.stringValue = text
-            texts[k]?.font = level == .error ? .boldSystemFont(ofSize: 12) : .systemFont(ofSize: 12)
+            texts[k]?.font = Theme.font(12, level == .error ? .semibold : .regular)
         }
-        permButton.isHidden = s.status[.permission]?.0 == .ok
+        let (lv, line) = s.summary()
+        pillDot.level = lv
+        pillText.stringValue = line
+        controlText.stringValue = s.controlLine().map { "· " + $0 } ?? ""
+        sharingSwitch.isOn = s.sharingEnabled
+        autostartSwitch.isOn = LoginItem.isEnabled
+        permRow.isHidden = s.status[.permission]?.0 == .ok
     }
 
     func refreshLayout() {
         layoutView.needsDisplay = true
-        swap.state = AppState.shared.swapCmdCtrl ? .on : .off
+        swapSwitch.isOn = AppState.shared.swapCmdCtrl
+        refreshStatus()
     }
+
+    func refreshSettings() {
+        sharingSwitch.isOn = AppState.shared.sharingEnabled
+        autostartSwitch.isOn = LoginItem.isEnabled
+    }
+
+    var boxText: String { boxField.stringValue }
 
     func appendLog(_ line: String) {
         let storage = logView.textStorage!
@@ -239,7 +269,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
     var logText: String { logView.string }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        // Keep sharing input in the background; the Dock icon / menu reopens the window.
+        // Keep sharing input in the background; the menu bar icon reopens the window.
         sender.orderOut(nil)
         return false
     }

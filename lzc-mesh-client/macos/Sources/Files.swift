@@ -95,18 +95,20 @@ final class FilesClient {
 final class FilesView: NSView {
     let client = FilesClient()
     private let stack = NSStackView()
-    private let statusLabel = NSTextField(labelWithString: "")
-    private let emptyLabel = NSTextField(labelWithString: "还没有共享文件。点击“上传文件”或把文件拖到这里。")
+    private let statusLabel = makeLabel("", size: 11, color: Theme.muted)
+    private let emptyLabel = makeLabel("还没有共享文件。点击“上传文件”或把文件拖到这里。", size: 12, color: Theme.muted)
     private var names: [String] = []
+    private let df: DateFormatter = { let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f }()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
+        stack.spacing = 0
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
@@ -118,25 +120,25 @@ final class FilesView: NSView {
             stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor), stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
-        for l in [statusLabel, emptyLabel] { l.font = .systemFont(ofSize: 11); l.textColor = .gray }
-        let upload = NSButton(title: "上传文件", target: self, action: #selector(pick))
-        upload.bezelStyle = .rounded
-        let hint = NSTextField(wrappingLabelWithString: "上传的文件所有设备都能下载；下载保存到“下载”文件夹。")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .gray
-        let bar = NSStackView(views: [hint, upload])
+        emptyLabel.alignment = .center
+        let upload = FlatButton(title: "上传文件", primary: true, target: self, action: #selector(pick))
+        let hint = makeLabel("所有设备都能下载；下载到“下载”文件夹，也可把文件拖进来", size: 11, color: Theme.muted)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let bar = NSStackView(views: [hint, spacer, upload])
         bar.spacing = 8
         let root = NSStackView(views: [bar, emptyLabel, scroll, statusLabel])
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 6
+        root.spacing = 8
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
         NSLayoutConstraint.activate([
             root.topAnchor.constraint(equalTo: topAnchor), root.bottomAnchor.constraint(equalTo: bottomAnchor),
             root.leadingAnchor.constraint(equalTo: leadingAnchor), root.trailingAnchor.constraint(equalTo: trailingAnchor),
             bar.widthAnchor.constraint(equalTo: root.widthAnchor), scroll.widthAnchor.constraint(equalTo: root.widthAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 120),
+            emptyLabel.widthAnchor.constraint(equalTo: root.widthAnchor), statusLabel.widthAnchor.constraint(equalTo: root.widthAnchor),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90),
         ])
         client.onStatus = { [weak self] in self?.statusLabel.stringValue = $0 }
     }
@@ -149,24 +151,30 @@ final class FilesView: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         emptyLabel.isHidden = !files.isEmpty
         names = files.map { $0.name }
-        let df = DateFormatter()
-        df.dateFormat = "MM-dd HH:mm"
         for (i, f) in files.enumerated() {
-            let name = NSTextField(labelWithString: f.name)
+            let name = makeLabel(f.name, size: 12, color: Theme.text)
             name.lineBreakMode = .byTruncatingMiddle
             name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let meta = NSTextField(labelWithString: "\(ByteCountFormatter.string(fromByteCount: f.size, countStyle: .file)) · \(f.uploader.isEmpty ? "-" : f.uploader) · \(df.string(from: Date(timeIntervalSince1970: f.modified)))")
-            meta.font = .systemFont(ofSize: 11)
-            meta.textColor = .gray
-            let dl = NSButton(title: "下载", target: self, action: #selector(download(_:)))
-            let rm = NSButton(title: "删除", target: self, action: #selector(remove(_:)))
-            for b in [dl, rm] { b.tag = i; b.bezelStyle = .rounded; b.controlSize = .small }
+            let size = ByteCountFormatter.string(fromByteCount: f.size, countStyle: .file)
+            let meta = makeLabel("\(size) · \(f.uploader.isEmpty ? "-" : f.uploader) · \(df.string(from: Date(timeIntervalSince1970: f.modified)))", size: 11, color: Theme.muted)
+            meta.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+            let dl = FlatButton(title: "下载", primary: false, target: self, action: #selector(download(_:)))
+            let rm = FlatButton(title: "删除", primary: false, target: self, action: #selector(remove(_:)))
+            for b in [dl, rm] { b.tag = i }
             let spacer = NSView()
             spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
             let row = NSStackView(views: [name, spacer, meta, dl, rm])
             row.spacing = 8
+            row.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+            let sep = NSView()
+            sep.wantsLayer = true
+            sep.layer?.backgroundColor = Theme.line.cg
             stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -16).isActive = true
+            stack.addArrangedSubview(sep)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            sep.translatesAutoresizingMaskIntoConstraints = false
+            sep.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            sep.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
     }
 

@@ -103,6 +103,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         let s = AppState.shared
         send(["t": "hello", "id": s.deviceID, "name": Host.current().localizedName ?? "Mac", "platform": "macos",
               "w": s.screenW, "h": s.screenH, "version": AppState.version])
+        if !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
     private func handle(_ o: [String: Any]) {
@@ -117,7 +118,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.devices = (o["devices"] as? [[String: Any]] ?? []).map {
                 MeshDevice(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "", platform: $0["platform"] as? String ?? "",
                            version: $0["version"] as? String ?? "", x: $0["x"] as? Double ?? 0, y: $0["y"] as? Double ?? 0,
-                           w: $0["w"] as? Double ?? 0, h: $0["h"] as? Double ?? 0, online: $0["online"] as? Bool ?? false)
+                           w: $0["w"] as? Double ?? 0, h: $0["h"] as? Double ?? 0, online: $0["online"] as? Bool ?? false,
+                           sharing: $0["sharing"] as? Bool ?? true)
             }
             let active = o["active"] as? [String: Any]
             s.activeSource = active?["source"] as? String
@@ -131,6 +133,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.set(.hub, .ok, "已连接 · 用户 \(s.hubUser) · \(s.devices.filter { $0.online }.count) 台设备在线")
             s.updateControlStatus()
             s.onDevices?()
+            s.onStatus?()
         case "edges":
             input.setEdges(left: o["left"] as? Bool ?? false, right: o["right"] as? Bool ?? false,
                            up: o["up"] as? Bool ?? false, down: o["down"] as? Bool ?? false)
