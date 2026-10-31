@@ -32,12 +32,15 @@ typedef struct {
     char *version;
     double x, y, w, h;
     bool online;
+    bool sharing;
 } MeshDevice;
 
 typedef struct {
     // Config
     char *device_id;
     char *box_override;  // empty: use the LazyCat default box
+    bool sharing_enabled;  // keyboard/mouse sharing switch (tray / header), persisted
+    bool background;       // started with --background (login): no window
 
     // LazyCat discovery
     char *box_name;
@@ -68,3 +71,9 @@ void app_log(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
 void app_devices_changed(void);
 void app_status_changed(void);
 const char *app_effective_box(void);
+// One-line summary for the header pill and the tray ("已连接 · 3 台设备在线", or the first problem).
+char *app_summary(StatusLevel *level);
+// "正在控制 X" / "X 正在控制本机", or NULL when idle.
+char *app_control_line(void);
+void app_set_sharing(bool on);
+void app_quit(void);

@@ -252,7 +252,7 @@ static void hide_cursor(void) {
 
 static void maybe_edge(void) {
     Surf *s = W.pointer_on;
-    if (!s || s->dir < 0 || app.captured || app.controlled || !app.hub_connected) return;
+    if (!s || s->dir < 0 || app.captured || app.controlled || !app.hub_connected || !app.sharing_enabled) return;
     gint64 now = g_get_monotonic_time();
     if (now < W.quiet_until || now - W.last_edge < 250 * 1000) return;
     W.last_edge = now;

@@ -1,6 +1,6 @@
 # 懒猫设备接力 (LZC Mesh) Linux client: GTK4 window, libsoup3 hub connection, Wayland input and clipboard.
 CC ?= gcc
-PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client xkbcommon
+PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client xkbcommon cairo
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -std=gnu11 $(shell pkg-config --cflags $(PKGS)) -Ibuild
 LDLIBS += $(shell pkg-config --libs $(PKGS))
 VERSION ?= 0.1.1
@@ -11,7 +11,7 @@ PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-
 	wlr-data-control-unstable-v1
 PROTO_H = $(PROTOCOLS:%=build/%-client-protocol.h)
 PROTO_C = $(PROTOCOLS:%=build/%-protocol.c)
-SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/wl_input.c src/config.c src/clipboard.c src/files.c
+SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/wl_input.c src/config.c src/clipboard.c src/files.c src/tray.c src/autostart.c
 OBJ = $(SRC:src/%.c=build/%.o) $(PROTO_C:.c=.o)
 
 all: build/lzc-mesh

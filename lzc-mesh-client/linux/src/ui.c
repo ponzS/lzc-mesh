@@ -1,61 +1,107 @@
-// Main window: status of every dependency (for troubleshooting), the layout
-// editor, the shared settings and a live event log.
+// Main window: header with live connection status and the sharing switch, then two
+// columns. Left: screen layout and shared files. Right: connection status, settings
+// and the event log. Black / white / grey, the same structure as macOS and Windows.
 #include <string.h>
 
 #include "app.h"
-#include "lzc.h"
-#include "net.h"
-#include "ui.h"
-
+#include "autostart.h"
 #include "config.h"
 #include "files.h"
+#include "lzc.h"
+#include "net.h"
+#include "tray.h"
+#include "ui.h"
 
-static GtkWidget *window, *layout_view, *swap_check, *log_view, *open_btn, *box_entry;
+static GtkWidget *window, *layout_view, *log_view, *box_entry, *open_btn;
+static GtkWidget *sharing_switch, *swap_switch, *autostart_switch;
+static GtkWidget *pill_dot, *pill_text, *control_text;
 static GtkWidget *status_dot[S_COUNT], *status_text[S_COUNT];
-static bool updating_swap;
+static bool updating;  // suppress switch signals while syncing from state
 
 static const char *labels[S_COUNT] = {
     "懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板",
 };
 
 static const char *css =
-    "window { background: #f5f5f5; color: #111; }"
-    ".card { background: #ffffff; border: 1px solid #e2e2e2; border-radius: 10px; padding: 14px; }"
-    ".title { font-weight: 600; font-size: 13px; }"
-    ".muted { color: #777; font-size: 12px; }"
-    ".key { color: #555; }"
-    ".dot { min-width: 8px; min-height: 8px; border-radius: 4px; background: #c8c8c8; }"
-    ".dot.ok { background: #111; }"
-    ".dot.warn { background: #888; }"
-    ".dot.error { background: #fff; border: 2px solid #111; min-width: 4px; min-height: 4px; }"
-    ".error-text { color: #111; font-weight: 600; }"
-    "textview, textview text { background: #fafafa; color: #333; font-family: monospace; font-size: 11px; }"
-    "button { border-radius: 6px; }";
+    "window.lzc { background: #f5f5f5; color: #111; }"
+    ".lzc .header { padding: 14px 22px 8px 22px; }"
+    ".lzc .app-title { font-weight: 600; font-size: 16px; }"
+    ".lzc .card { background: #ffffff; border: 1px solid #e2e2e2; border-radius: 12px; padding: 14px 16px; }"
+    ".lzc .card-title { font-weight: 600; font-size: 14px; }"
+    ".lzc .muted { color: #777777; font-size: 12px; }"
+    ".lzc .key { color: #777777; }"
+    ".lzc .strong { font-weight: 600; }"
+    ".lzc .dot { min-width: 8px; min-height: 8px; border-radius: 99px; background: #cccccc; margin-top: 5px; }"
+    ".lzc .dot.ok { background: #111111; }"
+    ".lzc .dot.warn { background: #888888; }"
+    ".lzc .dot.error { background: #ffffff; box-shadow: inset 0 0 0 2px #111111; }"
+    ".lzc .header .dot { margin-top: 0; }"
+    ".lzc button { border-radius: 8px; padding: 4px 12px; min-height: 0; background: #ffffff; color: #111111;"
+    "  border: 1px solid #e2e2e2; box-shadow: none; background-image: none; text-shadow: none; }"
+    ".lzc button:hover { background: #f2f2f2; border-color: #9e9e9e; }"
+    ".lzc button:active { background: #e8e8e8; }"
+    ".lzc button:disabled { color: #aaaaaa; }"
+    ".lzc button.primary { background: #111111; color: #ffffff; border-color: #111111; }"
+    ".lzc button.primary:hover { background: #333333; }"
+    ".lzc switch { background: #cccccc; border: none; border-radius: 99px; min-width: 34px; min-height: 20px; box-shadow: none; }"
+    ".lzc switch:checked { background: #111111; }"
+    ".lzc switch slider { background: #ffffff; border: none; border-radius: 99px; min-width: 16px; min-height: 16px; margin: 2px;"
+    "  box-shadow: none; }"
+    ".lzc entry { border-radius: 8px; border: 1px solid #e2e2e2; background: #ffffff; box-shadow: none; min-height: 28px; }"
+    ".lzc entry:focus-within { border-color: #999999; outline: none; }"
+    ".lzc textview, .lzc textview text { background: #ffffff; color: #404040; font-family: monospace; font-size: 11px; }"
+    ".lzc list, .lzc row { background: #ffffff; }"
+    ".lzc row { border-bottom: 1px solid #ececec; padding: 2px 0; }"
+    ".lzc scrollbar { background: transparent; }";
+
+// ------------------------------------------------------------------ updates
+
+static void set_dot(GtkWidget *dot, StatusLevel lv) {
+    gtk_widget_remove_css_class(dot, "ok");
+    gtk_widget_remove_css_class(dot, "warn");
+    gtk_widget_remove_css_class(dot, "error");
+    if (lv == ST_OK) gtk_widget_add_css_class(dot, "ok");
+    if (lv == ST_WARN) gtk_widget_add_css_class(dot, "warn");
+    if (lv == ST_ERROR) gtk_widget_add_css_class(dot, "error");
+}
+
+static void sync_switches(void) {
+    updating = true;
+    gtk_switch_set_active(GTK_SWITCH(sharing_switch), app.sharing_enabled);
+    gtk_switch_set_active(GTK_SWITCH(swap_switch), app.swap_cmd_ctrl);
+    gtk_switch_set_active(GTK_SWITCH(autostart_switch), autostart_enabled());
+    updating = false;
+}
 
 void ui_refresh_status(void) {
     if (!window) return;
     for (int i = 0; i < S_COUNT; i++) {
         Status *s = &app.status[i];
-        GtkWidget *dot = status_dot[i];
-        gtk_widget_remove_css_class(dot, "ok");
-        gtk_widget_remove_css_class(dot, "warn");
-        gtk_widget_remove_css_class(dot, "error");
-        if (s->level == ST_OK) gtk_widget_add_css_class(dot, "ok");
-        if (s->level == ST_WARN) gtk_widget_add_css_class(dot, "warn");
-        if (s->level == ST_ERROR) gtk_widget_add_css_class(dot, "error");
+        set_dot(status_dot[i], s->level);
         gtk_label_set_text(GTK_LABEL(status_text[i]), s->text ? s->text : "");
-        if (s->level == ST_ERROR) gtk_widget_add_css_class(status_text[i], "error-text");
-        else gtk_widget_remove_css_class(status_text[i], "error-text");
+        if (s->level == ST_ERROR) gtk_widget_add_css_class(status_text[i], "strong");
+        else gtk_widget_remove_css_class(status_text[i], "strong");
     }
+    StatusLevel lv;
+    char *summary = app_summary(&lv);
+    set_dot(pill_dot, lv);
+    gtk_label_set_text(GTK_LABEL(pill_text), summary);
+    if (lv == ST_OK) gtk_widget_remove_css_class(pill_text, "muted");
+    else gtk_widget_add_css_class(pill_text, "muted");
+    g_free(summary);
+    char *ctrl = app_control_line();
+    char *ctrl_line = ctrl ? g_strdup_printf("·  %s", ctrl) : g_strdup("");
+    gtk_label_set_text(GTK_LABEL(control_text), ctrl_line);
+    g_free(ctrl_line);
+    g_free(ctrl);
     gtk_widget_set_sensitive(open_btn, app.box_domain && *app.box_domain);
+    sync_switches();
 }
 
 void ui_refresh_layout(void) {
     if (!window) return;
     layout_view_refresh(layout_view);
-    updating_swap = true;
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(swap_check), app.swap_cmd_ctrl);
-    updating_swap = false;
+    ui_refresh_status();
 }
 
 void ui_append_log(const char *line) {
@@ -65,7 +111,6 @@ void ui_append_log(const char *line) {
     gtk_text_buffer_get_end_iter(buf, &end);
     gtk_text_buffer_insert(buf, &end, line, -1);
     gtk_text_buffer_insert(buf, &end, "\n", -1);
-    // Keep the log bounded.
     if (gtk_text_buffer_get_line_count(buf) > 400) {
         GtkTextIter a, b;
         gtk_text_buffer_get_start_iter(buf, &a);
@@ -78,28 +123,28 @@ void ui_append_log(const char *line) {
     gtk_text_buffer_delete_mark(buf, mark);
 }
 
-static GtkWidget *card(const char *title, GtkWidget *child) {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_add_css_class(box, "card");
-    GtkWidget *t = gtk_label_new(title);
-    gtk_widget_add_css_class(t, "title");
-    gtk_label_set_xalign(GTK_LABEL(t), 0);
-    gtk_box_append(GTK_BOX(box), t);
-    gtk_box_append(GTK_BOX(box), child);
-    return box;
-}
+// ------------------------------------------------------------------ actions
 
-static void on_swap(GtkCheckButton *b, gpointer u) {
-    if (!updating_swap) net_send_settings(gtk_check_button_get_active(b));
-}
-
-static void on_open(GtkButton *b, gpointer u) {
+void ui_open_management(void) {
+    if (!app.box_domain || !*app.box_domain) return;
     char *url = lzc_manage_url();
     GtkUriLauncher *l = gtk_uri_launcher_new(url);
-    gtk_uri_launcher_launch(l, GTK_WINDOW(window), NULL, NULL, NULL);
+    gtk_uri_launcher_launch(l, window && gtk_widget_get_visible(window) ? GTK_WINDOW(window) : NULL, NULL, NULL, NULL);
     g_object_unref(l);
     g_free(url);
 }
+
+void ui_toggle_autostart(void) {
+    char *err = NULL;
+    bool on = !autostart_enabled();
+    if (!autostart_set(on, &err)) app_log("设置开机启动失败：%s", err ? err : "?");
+    else app_log("已%s开机自动启动", on ? "开启" : "关闭");
+    g_free(err);
+    if (window) sync_switches();
+    tray_menu_changed();
+}
+
+static void on_open(GtkButton *b, gpointer u) { ui_open_management(); }
 
 static void on_retry(GtkButton *b, gpointer u) {
     app_log("手动重新检测");
@@ -142,44 +187,168 @@ static void on_box_apply(GtkWidget *w, gpointer u) {
     lzc_refresh();
 }
 
-static GtkWidget *box_row(void) {
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *k = gtk_label_new("使用的微服");
-    gtk_widget_add_css_class(k, "key");
-    box_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(box_entry), "留空使用懒猫客户端默认微服，例如 ponzs");
-    gtk_editable_set_text(GTK_EDITABLE(box_entry), app.box_override ? app.box_override : "");
-    gtk_widget_set_hexpand(box_entry, TRUE);
-    g_signal_connect(box_entry, "activate", G_CALLBACK(on_box_apply), NULL);
-    GtkWidget *apply = gtk_button_new_with_label("应用");
-    g_signal_connect(apply, "clicked", G_CALLBACK(on_box_apply), NULL);
-    gtk_box_append(GTK_BOX(row), k);
-    gtk_box_append(GTK_BOX(row), box_entry);
-    gtk_box_append(GTK_BOX(row), apply);
+static gboolean on_sharing(GtkSwitch *s, gboolean state, gpointer u) {
+    if (!updating) app_set_sharing(state);
+    return FALSE;
+}
+static gboolean on_swap(GtkSwitch *s, gboolean state, gpointer u) {
+    if (!updating) net_send_settings(state);
+    return FALSE;
+}
+static gboolean on_autostart(GtkSwitch *s, gboolean state, gpointer u) {
+    if (!updating && state != autostart_enabled()) ui_toggle_autostart();
+    return FALSE;
+}
+
+static gboolean on_close(GtkWindow *w, gpointer u) {
+    // No tray to come back from: closing the window quits instead of leaving an
+    // invisible process behind.
+    if (!tray_available()) app_quit();
+    return FALSE;  // hide_on_close takes care of hiding
+}
+
+// ------------------------------------------------------------------ building
+
+static GtkWidget *label(const char *text, const char *cls, bool wrap) {
+    GtkWidget *l = gtk_label_new(text);
+    gtk_label_set_xalign(GTK_LABEL(l), 0);
+    gtk_label_set_yalign(GTK_LABEL(l), 0);
+    if (cls) gtk_widget_add_css_class(l, cls);
+    if (wrap) {
+        gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+        gtk_label_set_wrap_mode(GTK_LABEL(l), PANGO_WRAP_WORD_CHAR);
+    } else {
+        gtk_label_set_ellipsize(GTK_LABEL(l), PANGO_ELLIPSIZE_END);
+    }
+    return l;
+}
+
+static GtkWidget *button(const char *text, GCallback cb, bool primary) {
+    GtkWidget *b = gtk_button_new_with_label(text);
+    if (primary) gtk_widget_add_css_class(b, "primary");
+    g_signal_connect(b, "clicked", cb, NULL);
+    return b;
+}
+
+static GtkWidget *card(const char *title, GtkWidget *trailing, GtkWidget *child) {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_widget_add_css_class(box, "card");
+    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *t = label(title, "card-title", false);
+    gtk_widget_set_hexpand(t, TRUE);
+    gtk_box_append(GTK_BOX(head), t);
+    if (trailing) gtk_box_append(GTK_BOX(head), trailing);
+    gtk_box_append(GTK_BOX(box), head);
+    gtk_box_append(GTK_BOX(box), child);
+    return box;
+}
+
+static GtkWidget *dot(void) {
+    GtkWidget *d = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(d, "dot");
+    gtk_widget_set_valign(d, GTK_ALIGN_START);
+    gtk_widget_set_halign(d, GTK_ALIGN_CENTER);
+    return d;
+}
+
+static GtkWidget *setting_row(const char *title, const char *detail, GtkWidget **sw, GCallback cb) {
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_hexpand(texts, TRUE);
+    gtk_box_append(GTK_BOX(texts), label(title, NULL, false));
+    gtk_box_append(GTK_BOX(texts), label(detail, "muted", true));
+    *sw = gtk_switch_new();
+    gtk_widget_set_valign(*sw, GTK_ALIGN_START);
+    g_signal_connect(*sw, "state-set", cb, NULL);
+    gtk_box_append(GTK_BOX(row), texts);
+    gtk_box_append(GTK_BOX(row), *sw);
     return row;
 }
 
-static GtkWidget *status_grid(void) {
+static GtkWidget *build_header(void) {
+    GtkWidget *h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_add_css_class(h, "header");
+    gtk_box_append(GTK_BOX(h), label("懒猫设备接力", "app-title", false));
+    pill_dot = dot();
+    gtk_widget_set_valign(pill_dot, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_start(pill_dot, 8);
+    pill_text = label("正在连接…", NULL, false);
+    gtk_widget_set_valign(pill_text, GTK_ALIGN_CENTER);
+    control_text = label("", "strong", false);
+    gtk_widget_set_valign(control_text, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(control_text, TRUE);
+    GtkWidget *sl = label("键鼠共享", "strong", false);
+    gtk_widget_set_valign(sl, GTK_ALIGN_CENTER);
+    sharing_switch = gtk_switch_new();
+    gtk_widget_set_valign(sharing_switch, GTK_ALIGN_CENTER);
+    g_signal_connect(sharing_switch, "state-set", G_CALLBACK(on_sharing), NULL);
+    gtk_box_append(GTK_BOX(h), pill_dot);
+    gtk_box_append(GTK_BOX(h), pill_text);
+    gtk_box_append(GTK_BOX(h), control_text);
+    gtk_box_append(GTK_BOX(h), sl);
+    gtk_box_append(GTK_BOX(h), sharing_switch);
+    return h;
+}
+
+static GtkWidget *build_status(void) {
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 7);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
     for (int i = 0; i < S_COUNT; i++) {
-        status_dot[i] = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        gtk_widget_add_css_class(status_dot[i], "dot");
-        gtk_widget_set_valign(status_dot[i], GTK_ALIGN_CENTER);
-        GtkWidget *k = gtk_label_new(labels[i]);
-        gtk_widget_add_css_class(k, "key");
-        gtk_label_set_xalign(GTK_LABEL(k), 0);
-        status_text[i] = gtk_label_new("");
-        gtk_label_set_xalign(GTK_LABEL(status_text[i]), 0);
-        gtk_label_set_wrap(GTK_LABEL(status_text[i]), TRUE);
+        status_dot[i] = dot();
+        GtkWidget *k = label(labels[i], "key", false);
+        gtk_widget_set_size_request(k, 96, -1);
+        status_text[i] = label(app.status[i].text, NULL, true);
         gtk_label_set_selectable(GTK_LABEL(status_text[i]), TRUE);
         gtk_widget_set_hexpand(status_text[i], TRUE);
         gtk_grid_attach(GTK_GRID(grid), status_dot[i], 0, i, 1, 1);
         gtk_grid_attach(GTK_GRID(grid), k, 1, i, 1, 1);
         gtk_grid_attach(GTK_GRID(grid), status_text[i], 2, i, 1, 1);
     }
-    return grid;
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    open_btn = button("打开管理页面", G_CALLBACK(on_open), false);
+    gtk_box_append(GTK_BOX(bar), button("重新检测", G_CALLBACK(on_retry), false));
+    gtk_box_append(GTK_BOX(bar), open_btn);
+    gtk_box_append(GTK_BOX(bar), button("复制诊断信息", G_CALLBACK(on_copy), false));
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_box_append(GTK_BOX(box), grid);
+    gtk_box_append(GTK_BOX(box), bar);
+    return card("连接状态", NULL, box);
+}
+
+static GtkWidget *build_settings(void) {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_box_append(GTK_BOX(box), setting_row("开机自动启动", "登录系统后自动在托盘运行", &autostart_switch, G_CALLBACK(on_autostart)));
+    gtk_box_append(GTK_BOX(box), setting_row("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", &swap_switch, G_CALLBACK(on_swap)));
+    GtkWidget *boxcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_append(GTK_BOX(boxcol), label("使用的微服", NULL, false));
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    box_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(box_entry), "默认使用懒猫客户端的微服，例如 ponzs");
+    gtk_editable_set_text(GTK_EDITABLE(box_entry), app.box_override ? app.box_override : "");
+    gtk_widget_set_hexpand(box_entry, TRUE);
+    g_signal_connect(box_entry, "activate", G_CALLBACK(on_box_apply), NULL);
+    gtk_box_append(GTK_BOX(row), box_entry);
+    gtk_box_append(GTK_BOX(row), button("应用", G_CALLBACK(on_box_apply), false));
+    gtk_box_append(GTK_BOX(boxcol), row);
+    gtk_box_append(GTK_BOX(box), boxcol);
+    return card("设置", NULL, box);
+}
+
+static GtkWidget *build_log(void) {
+    log_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(log_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(log_view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(log_view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(log_view), GTK_WRAP_WORD_CHAR);
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), log_view);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_size_request(scroll, -1, 160);
+    GtkWidget *c = card("事件日志", NULL, scroll);
+    gtk_widget_set_vexpand(c, TRUE);
+    return c;
 }
 
 void ui_build(GtkApplication *gtk_app) {
@@ -188,64 +357,59 @@ void ui_build(GtkApplication *gtk_app) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     window = gtk_application_window_new(gtk_app);
+    gtk_widget_add_css_class(window, "lzc");
     gtk_window_set_title(GTK_WINDOW(window), "懒猫设备接力");
-    gtk_window_set_default_size(GTK_WINDOW(window), 920, 960);
-    // Keep running (and sharing input) when the window is closed; quit from the button.
+    gtk_window_set_default_size(GTK_WINDOW(window), 1180, 800);
+    // Keep running (and sharing input) when the window is closed; quit from the tray.
     gtk_window_set_hide_on_close(GTK_WINDOW(window), TRUE);
+    g_signal_connect(window, "close-request", G_CALLBACK(on_close), NULL);
     g_application_hold(G_APPLICATION(gtk_app));
 
-    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_start(root, 16);
-    gtk_widget_set_margin_end(root, 16);
-    gtk_widget_set_margin_top(root, 16);
-    gtk_widget_set_margin_bottom(root, 16);
-
-    GtkWidget *status = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_box_append(GTK_BOX(status), status_grid());
-    gtk_box_append(GTK_BOX(status), box_row());
-    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *retry = gtk_button_new_with_label("重新检测");
-    g_signal_connect(retry, "clicked", G_CALLBACK(on_retry), NULL);
-    open_btn = gtk_button_new_with_label("打开管理页面");
-    g_signal_connect(open_btn, "clicked", G_CALLBACK(on_open), NULL);
-    GtkWidget *copy = gtk_button_new_with_label("复制诊断信息");
-    g_signal_connect(copy, "clicked", G_CALLBACK(on_copy), NULL);
-    GtkWidget *quit = gtk_button_new_with_label("退出");
-    g_signal_connect_swapped(quit, "clicked", G_CALLBACK(g_application_quit), gtk_app);
-    gtk_box_append(GTK_BOX(actions), retry);
-    gtk_box_append(GTK_BOX(actions), open_btn);
-    gtk_box_append(GTK_BOX(actions), copy);
-    gtk_box_append(GTK_BOX(actions), quit);
-    gtk_box_append(GTK_BOX(status), actions);
-    gtk_box_append(GTK_BOX(root), card("状态", status));
-
-    GtkWidget *lay = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *hint = gtk_label_new("拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Alt+Esc 收回光标。");
-    gtk_widget_add_css_class(hint, "muted");
-    gtk_label_set_xalign(GTK_LABEL(hint), 0);
-    gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+    // Left column
+    GtkWidget *hint = label("拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Alt+Esc 收回光标。", "muted", true);
     layout_view = layout_view_new();
-    swap_check = gtk_check_button_new_with_label("Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl");
-    g_signal_connect(swap_check, "toggled", G_CALLBACK(on_swap), NULL);
+    GtkWidget *lay = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_append(GTK_BOX(lay), hint);
     gtk_box_append(GTK_BOX(lay), layout_view);
-    gtk_box_append(GTK_BOX(lay), swap_check);
-    GtkWidget *lay_card = card("屏幕布局", lay);
+    GtkWidget *lay_card = card("屏幕布局", NULL, lay);
     gtk_widget_set_vexpand(lay_card, TRUE);
-    gtk_box_append(GTK_BOX(root), lay_card);
-    gtk_box_append(GTK_BOX(root), card("文件共享", files_panel_new(window)));
+    GtkWidget *upload = NULL;
+    GtkWidget *files = files_panel_new(window, &upload);
+    GtkWidget *files_card = card("文件共享", upload, files);
+    gtk_widget_set_vexpand(files_card, FALSE);
+    GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    gtk_widget_set_hexpand(left, TRUE);
+    gtk_box_append(GTK_BOX(left), lay_card);
+    gtk_box_append(GTK_BOX(left), files_card);
 
-    log_view = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(log_view), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(log_view), TRUE);
-    GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), log_view);
-    gtk_widget_set_size_request(scroll, -1, 110);
-    gtk_box_append(GTK_BOX(root), card("事件日志", scroll));
+    // Right column. It scrolls on its own, so long status texts never make the window
+    // taller than the screen or push the left column out of view.
+    GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    gtk_box_append(GTK_BOX(right), build_status());
+    gtk_box_append(GTK_BOX(right), build_settings());
+    gtk_box_append(GTK_BOX(right), build_log());
+    GtkWidget *right_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(right_scroll), right);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(right_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(right_scroll), TRUE);
+    gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(right_scroll), FALSE);
+    gtk_widget_set_size_request(right_scroll, 420, -1);
+    gtk_widget_set_vexpand(right_scroll, TRUE);
 
+    GtkWidget *cols = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
+    gtk_widget_set_margin_start(cols, 20);
+    gtk_widget_set_margin_end(cols, 20);
+    gtk_widget_set_margin_bottom(cols, 20);
+    gtk_widget_set_vexpand(cols, TRUE);
+    gtk_box_append(GTK_BOX(cols), left);
+    gtk_box_append(GTK_BOX(cols), right_scroll);
+
+    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(root), build_header());
+    gtk_box_append(GTK_BOX(root), cols);
     gtk_window_set_child(GTK_WINDOW(window), root);
     ui_refresh_status();
-    gtk_window_present(GTK_WINDOW(window));
+    if (!app.background) gtk_window_present(GTK_WINDOW(window));
     app_log("懒猫设备接力 Linux %s 启动，设备 ID %s", LZC_MESH_VERSION, app.device_id);
 }
 

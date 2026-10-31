@@ -18,6 +18,8 @@ void config_save(void) {
     json_builder_add_string_value(b, app.device_id);
     json_builder_set_member_name(b, "box");
     json_builder_add_string_value(b, app.box_override ? app.box_override : "");
+    json_builder_set_member_name(b, "sharing");
+    json_builder_add_boolean_value(b, app.sharing_enabled);
     json_builder_end_object(b);
     JsonGenerator *gen = json_generator_new();
     json_generator_set_pretty(gen, TRUE);
@@ -36,6 +38,7 @@ void config_load(void) {
         JsonObject *o = json_node_get_object(json_parser_get_root(p));
         app.device_id = g_strdup(json_object_get_string_member_with_default(o, "device_id", ""));
         app.box_override = g_strdup(json_object_get_string_member_with_default(o, "box", ""));
+        app.sharing_enabled = json_object_get_boolean_member_with_default(o, "sharing", true);
     }
     g_object_unref(p);
     g_free(path);

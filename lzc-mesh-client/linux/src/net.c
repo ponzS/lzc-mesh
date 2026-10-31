@@ -54,6 +54,7 @@ void net_send_hello(void) {
     str(b, "version", LZC_MESH_VERSION);
     done(b);
     g_free(name);
+    if (!app.sharing_enabled) net_send_sharing(false);
 }
 void net_send_edge(const char *dir, double pos) { JsonBuilder *b = msg("edge"); str(b, "dir", dir); num(b, "pos", pos); done(b); }
 void net_send_motion(double dx, double dy) { JsonBuilder *b = msg("motion"); num(b, "dx", dx); num(b, "dy", dy); done(b); }
@@ -65,6 +66,8 @@ void net_send_layout(const char *id, double x, double y) { JsonBuilder *b = msg(
 void net_send_forget(const char *id) { JsonBuilder *b = msg("forget"); str(b, "id", id); done(b); }
 void net_send_settings(bool swap) { JsonBuilder *b = msg("settings"); boolean(b, "swap_cmd_ctrl", swap); done(b); }
 void net_send_clipboard(const char *text) { JsonBuilder *b = msg("clipboard"); str(b, "text", text); done(b); }
+void net_send_sharing(bool on) { JsonBuilder *b = msg("sharing"); boolean(b, "enabled", on); done(b); }
+void net_send_clipboard_setting(bool on) { JsonBuilder *b = msg("settings"); boolean(b, "clipboard", on); done(b); }
 
 static void update_clipboard_status(void) {
     if (!clipboard_available()) app_set_status(S_CLIPBOARD, ST_WARN, "当前合成器不支持 wlr-data-control，无法共享剪贴板");
@@ -109,6 +112,7 @@ static void on_state(JsonObject *o) {
         m->w = json_object_get_double_member_with_default(d, "w", 0);
         m->h = json_object_get_double_member_with_default(d, "h", 0);
         m->online = json_object_get_boolean_member_with_default(d, "online", false);
+        m->sharing = json_object_get_boolean_member_with_default(d, "sharing", true);
         g_ptr_array_add(app.devices, m);
     }
     g_clear_pointer(&app.active_source, g_free);

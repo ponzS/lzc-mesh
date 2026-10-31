@@ -213,6 +213,7 @@ void files_update(JsonArray *arr) {
     while ((child = gtk_widget_get_first_child(list_box))) gtk_list_box_remove(GTK_LIST_BOX(list_box), child);
     guint n = arr ? json_array_get_length(arr) : 0;
     gtk_widget_set_visible(empty_label, n == 0);
+    gtk_widget_set_visible(gtk_widget_get_parent(gtk_widget_get_parent(list_box)), n > 0);
     for (guint i = 0; i < n; i++) {
         JsonObject *f = json_array_get_object_element(arr, i);
         const char *name = json_object_get_string_member_with_default(f, "name", "");
@@ -246,30 +247,27 @@ void files_update(JsonArray *arr) {
     }
 }
 
-GtkWidget *files_panel_new(GtkWidget *window) {
+GtkWidget *files_panel_new(GtkWidget *window, GtkWidget **upload_button) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *hint = gtk_label_new("上传的文件所有设备都能下载；下载保存到“下载”文件夹。也可以把文件拖到这里。");
-    gtk_widget_add_css_class(hint, "muted");
-    gtk_label_set_xalign(GTK_LABEL(hint), 0);
-    gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-    gtk_widget_set_hexpand(hint, TRUE);
+    // The upload button goes in the card's title row (returned to the caller).
     GtkWidget *up = gtk_button_new_with_label("上传文件");
+    gtk_widget_add_css_class(up, "primary");
     g_signal_connect(up, "clicked", G_CALLBACK(on_upload), window);
-    gtk_box_append(GTK_BOX(bar), hint);
-    gtk_box_append(GTK_BOX(bar), up);
+    *upload_button = up;
     list_box = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(list_box), GTK_SELECTION_NONE);
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list_box);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(scroll, -1, 110);
-    empty_label = gtk_label_new("还没有共享文件");
+    gtk_widget_set_size_request(scroll, -1, 150);
+    gtk_widget_set_visible(scroll, FALSE);
+    empty_label = gtk_label_new("还没有共享文件。点击“上传文件”或把文件拖到这里。");
     gtk_widget_add_css_class(empty_label, "muted");
-    status_label = gtk_label_new("");
+    gtk_widget_set_size_request(empty_label, -1, 150);
+    status_label = gtk_label_new("所有设备都能下载；下载到“下载”文件夹，也可把文件拖进来");
     gtk_widget_add_css_class(status_label, "muted");
     gtk_label_set_xalign(GTK_LABEL(status_label), 0);
-    gtk_box_append(GTK_BOX(box), bar);
+    gtk_label_set_ellipsize(GTK_LABEL(status_label), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(box), empty_label);
     gtk_box_append(GTK_BOX(box), scroll);
     gtk_box_append(GTK_BOX(box), status_label);
