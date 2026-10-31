@@ -20,16 +20,16 @@
 
 ## 下载
 
-安装包在 [GitHub Releases](https://github.com/ponzS/lzc-mesh/releases)，每个版本包含：
+安装包在 [GitHub Releases](https://github.com/ponzS/lzc-mesh/releases)。每个平台都有安装包和压缩包，任选其一：
 
-| 文件 | 内容 |
-| --- | --- |
-| `cloud.lazycat.app.lzc-mesh-v<版本>.lpk` | 懒猫微服应用，拖到微服启动器页面即可安装 |
-| `lzc-mesh-macos.dmg` | macOS 12+，Apple Silicon / Intel 通用，打开后把 LZC Mesh 拖到“应用程序” |
-| `lzc-mesh-windows.zip` | Windows 10/11 x64，解压后运行 `install.ps1` |
-| `lzc-mesh-linux-x86_64.tar.gz` | Linux x86_64，解压后运行 `install.sh` |
+| 平台 | 安装包 | 压缩包 |
+| --- | --- | --- |
+| 懒猫微服 | `cloud.lazycat.app.lzc-mesh-v<版本>.lpk`，拖到微服启动器页面安装 | — |
+| macOS 12+（Apple Silicon / Intel） | `lzc-mesh-macos.dmg`，打开后把 LZC Mesh 拖到“应用程序” | `lzc-mesh-macos.zip`，解压后把 `LZC Mesh.app` 移到“应用程序” |
+| Windows 10/11 x64 | `lzc-mesh-windows-setup.exe`，双击安装，可在“设置 › 应用”中卸载 | `lzc-mesh-windows.zip`，解压后右键 `install.ps1` → 使用 PowerShell 运行 |
+| Linux x86_64 | `lzc-mesh-linux-x86_64.pkg.tar.zst`（Arch），`sudo pacman -U` 安装 | `lzc-mesh-linux-x86_64.tar.gz`，解压后运行 `./install.sh` |
 
-LPK 管理页面上的下载链接指向对应版本的 Release。
+Windows 和 Linux 的安装都不需要管理员权限（Arch 包除外）。LPK 管理页面上的下载链接指向对应版本的 Release。
 
 ## 构建
 
@@ -40,14 +40,15 @@ cd lzc-mesh-lpk && sh build.sh && lzc-cli project release
 # macOS（在 Mac 上，需要 Xcode 命令行工具）
 cd lzc-mesh-client/macos && ./build.sh
 
-# Windows（在 Linux 上用 zig 交叉编译）
+# Windows（在 Linux 上用 zig 交叉编译，生成 setup.exe 和 zip）
 cd lzc-mesh-client/windows && ./build.sh
 
 # Linux（需要 gtk4、libsoup-3.0、json-glib、wayland-client、xkbcommon）
-cd lzc-mesh-client/linux && make
+cd lzc-mesh-client/linux && make && make dist   # tar.gz
+cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 ```
 
-产物输出到 `lzc-mesh-lpk/dist/` 和 `lzc-mesh-client/dist/`（macOS 为 `lzc-mesh-macos.dmg`）。
+产物输出到 `lzc-mesh-lpk/dist/` 和 `lzc-mesh-client/dist/`。macOS 的 `build.sh` 同时生成 dmg 和 zip。
 
 ## 权限
 

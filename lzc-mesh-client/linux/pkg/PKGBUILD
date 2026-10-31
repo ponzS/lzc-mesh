@@ -1,0 +1,26 @@
+# Arch Linux package for the LZC Mesh client. Built from this source tree by
+# `make pkg` (the Makefile copies the sources into $srcdir).
+pkgname=lzc-mesh
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Share one keyboard and mouse across your computers over the LazyCat network"
+arch=('x86_64')
+url="https://github.com/ponzS/lzc-mesh"
+license=('LicenseRef-PolyForm-Noncommercial-1.0.0')
+depends=('gtk4>=4.10' 'libsoup3' 'json-glib' 'wayland' 'libxkbcommon' 'glib2')
+makedepends=('wayland-protocols' 'pkgconf')
+source=()
+
+build() {
+  cd "$srcdir/linux"
+  make VERSION="$pkgver"
+}
+
+package() {
+  cd "$srcdir/linux"
+  install -Dm0755 build/lzc-mesh "$pkgdir/usr/bin/lzc-mesh"
+  install -Dm0644 lzc-mesh.desktop "$pkgdir/usr/share/applications/lzc-mesh.desktop"
+  install -Dm0644 lzc-mesh.desktop "$pkgdir/etc/xdg/autostart/lzc-mesh.desktop"
+  install -Dm0644 lzc-mesh.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/lzc-mesh.png"
+  install -Dm0644 ../../LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

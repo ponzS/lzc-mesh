@@ -35,6 +35,9 @@ h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
 .devices button { border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:6px; padding:2px 8px; cursor:pointer; font-size:12px; }
 .devices button:hover { color:var(--text); border-color:var(--muted); }
 .row { display:flex; gap:8px; align-items:flex-start; cursor:pointer; }
-.downloads { margin:0; padding-left:18px; }
-.downloads a { color:var(--text); }
+.downloads { list-style:none; margin:0; padding:0; }
+.downloads li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; padding:6px 0; border-top:1px solid var(--line); }
+.downloads li:first-child { border-top:0; }
+.downloads .platform { flex-basis:100%; }
+.downloads a { color:var(--text); font-size:13px; }
 .note a { color:var(--muted); }

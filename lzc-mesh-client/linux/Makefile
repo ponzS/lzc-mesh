@@ -28,11 +28,22 @@ build/lzc-mesh: $(OBJ)
 build:
 	mkdir -p build
 
+# Portable archive: binary + desktop entry + icon + install.sh
 dist: build/lzc-mesh
-	rm -rf build/dist && mkdir -p build/dist/lzc-mesh
-	cp build/lzc-mesh lzc-mesh.desktop lzc-mesh.png install.sh build/dist/lzc-mesh/
+	rm -rf build/dist && mkdir -p build/dist/lzc-mesh ../dist
+	cp build/lzc-mesh lzc-mesh.desktop lzc-mesh.png install.sh ../../LICENSE build/dist/lzc-mesh/
 	tar -C build/dist -czf ../dist/lzc-mesh-linux-x86_64.tar.gz lzc-mesh
+
+# Installer: Arch Linux package (pacman -U), built with makepkg from this tree
+pkg:
+	rm -rf build/pkg && mkdir -p build/pkg/src/linux ../dist
+	cp -r Makefile src protocols lzc-mesh.desktop lzc-mesh.png build/pkg/src/linux/
+	cp pkg/PKGBUILD build/pkg/
+	cp ../../LICENSE build/pkg/LICENSE
+	cd build/pkg && sed -i 's#install -Dm0644 ../../LICENSE#install -Dm0644 "$$startdir/LICENSE"#' PKGBUILD && \
+		SRCDEST=$$PWD PKGDEST=$$PWD/out makepkg -f --noextract --nodeps --noconfirm >makepkg.log 2>&1 || (tail -20 makepkg.log; exit 1)
+	cp build/pkg/out/lzc-mesh-$(VERSION)-1-x86_64.pkg.tar.zst ../dist/lzc-mesh-linux-x86_64.pkg.tar.zst
 
 clean:
 	rm -rf build
-.PHONY: all clean dist
+.PHONY: all clean dist pkg
