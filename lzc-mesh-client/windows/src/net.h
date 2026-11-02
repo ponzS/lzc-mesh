@@ -15,8 +15,10 @@ HttpResult httpGet(const std::wstring &url, const std::wstring &headers);
 // Hub WebSocket. connect() returns immediately; the reader thread posts
 // WM_APP_HUB_OPEN / WM_APP_HUB_TEXT / WM_APP_HUB_CLOSED to the main window.
 namespace hubws {
+struct Closed { unsigned generation; int status; std::wstring reason; };
 bool busy();
+bool isCurrent(unsigned generation, bool allowStopped = false);
 void connect(const std::wstring &host, const std::wstring &cookie);
 void close();
-void send(const std::string &text);  // thread-safe
+void send(const std::string &text);  // bounded enqueue only; never waits for network I/O
 }

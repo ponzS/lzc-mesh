@@ -21,18 +21,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hub.clipboard = clipboard
         clipboard.hub = hub
         state.onFiles = { [weak self] in self?.ui.filesView.update(AppState.shared.files) }
+        state.onActivity = { [weak self] on in
+            guard let self else { return }
+            self.input.sharingEnabled = on && self.state.sharingEnabled
+            if on && !self.input.permissions().ok { self.input.requestPermissions() }
+            self.input.setActive(on)
+            self.clipboard.setActive(on)
+            self.ui.filesView.setActive(on)
+            if !on { self.state.captured = false; self.state.controlled = false }
+            self.ui.refreshStatus(); self.bar.refreshIcon()
+        }
         input.hub = hub
-        input.sharingEnabled = state.sharingEnabled
+        input.sharingEnabled = false
         hub.onCookieRejected = { [weak self] in self?.lzc.invalidate() }
         lzc.onReady = { [weak self] ready, changed in
             guard let self = self else { return }
-            if changed && self.state.hubConnected { self.state.log("懒猫微服或登录会话变化，重新连接"); self.hub.disconnect() }
+            if changed && (self.state.hubConnected || self.hub.connecting) { self.state.log("懒猫微服或登录会话变化，重新连接"); self.hub.disconnect() }
             if ready && !self.state.hubConnected && !self.hub.connecting { self.hub.connect() }
-            if !ready && self.state.hubConnected { self.hub.disconnect() }
+            if !ready && (self.state.hubConnected || self.hub.connecting) { self.hub.disconnect() }
         }
         ui.layoutView.onMove = { [weak self] id, x, y in self?.hub.send(["t": "layout", "id": id, "x": x, "y": y]) }
         let shared: [String: () -> Void] = [
             "sharing": { [weak self] in self?.toggleSharing() },
+            "client": { [weak self] in
+                guard let self, self.state.hubConnected, self.state.clientControl else { return }
+                self.hub.send(["t": "device_enabled", "id": self.state.deviceID, "enabled": !self.state.clientEnabled])
+            },
             "clipboard": { [weak self] in self?.hub.send(["t": "settings", "clipboard": !(self?.state.clipboardEnabled ?? false)]) },
             "autostart": { [weak self] in self?.toggleAutostart() },
             "open": { [weak self] in
@@ -59,8 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboard.start()
         updateScreen()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.updateScreen() }
-        // Ask for missing permissions right away; the system shows its own prompts.
-        if !input.permissions().ok { input.requestPermissions() }
+        // A dormant client does not install input monitors or request permissions.
         input.refreshPermissionStatus()
         ui.refreshStatus()
         ui.refreshSettings()
@@ -80,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func toggleSharing() {
+        guard state.operational else { return }
         state.sharingEnabled.toggle()
         state.save()
         input.sharingEnabled = state.sharingEnabled

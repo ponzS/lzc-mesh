@@ -25,6 +25,7 @@ struct Json {
     bool isObj() const { return type == Obj; }
 
     static bool parse(const std::string &text, Json &out);
+    std::string dump() const;
 };
 
 // Builds a JSON object string incrementally: JsonOut().s("t","key").n("code",30).str()
@@ -36,5 +37,6 @@ struct JsonOut {
     JsonOut &s(const char *k, const std::string &v) { key(k); buf += esc(v); return *this; }
     JsonOut &n(const char *k, double v);
     JsonOut &b(const char *k, bool v) { key(k); buf += v ? "true" : "false"; return *this; }
+    JsonOut &raw(const char *k, const Json &v) { key(k); buf += v.dump(); return *this; }
     std::string str() { return buf + "}"; }
 };

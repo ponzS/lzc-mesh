@@ -5,6 +5,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <set>
@@ -13,11 +14,12 @@
 
 #include "json.h"
 
-#define LZC_MESH_VERSION "0.2.0"
+#define LZC_MESH_VERSION "0.2.1"
 
 enum Level { L_UNKNOWN, L_OK, L_WARN, L_ERROR };
 
-enum StatusKey { S_LZC_CLIENT, S_LZC_NETWORK, S_LOGIN, S_SERVICE, S_HUB, S_INPUT, S_CONTROL, S_SCREEN, S_CLIPBOARD, S_COUNT };
+enum StatusKey { S_LZC_CLIENT, S_LZC_NETWORK, S_LOGIN, S_SERVICE, S_HUB, S_INPUT, S_CONTROL, S_SCREEN, S_CLIPBOARD,
+                 S_TRANSPORT, S_POINTER_CHANNEL, S_KEYBOARD_CHANNEL, S_TRUST, S_COUNT };
 
 struct Status {
     Level level = L_UNKNOWN;
@@ -38,6 +40,7 @@ struct MeshDevice {
     double x = 0, y = 0, w = 0, h = 0;
     bool online = false;
     bool sharing = true;
+    bool enabled = true;
 };
 
 // Messages posted to the main window from other threads.
@@ -45,12 +48,14 @@ enum {
     WM_APP_PROBE = WM_APP + 1,  // lParam: Probe*
     WM_APP_HUB_TEXT,            // lParam: std::string*
     WM_APP_HUB_OPEN,
-    WM_APP_HUB_CLOSED,          // lParam: std::wstring* reason, wParam: HTTP status
+    WM_APP_HUB_CLOSED,          // lParam: hubws::Closed*, includes connection generation
     WM_APP_EDGE,                // wParam: dir, lParam: pos*10000
     WM_APP_INPUT,               // lParam: std::string* (JSON frame to send)
     WM_APP_FILES_STATUS,        // lParam: std::wstring* status text
     WM_APP_FILES_REVEAL,        // lParam: std::wstring* downloaded path
     WM_APP_TRAY,                // notification-area icon callback
+    WM_APP_DIRECT,              // drain ordered native transport callbacks on the UI thread
+    WM_APP_NET_LOG,             // bounded network diagnostics, no message contents
 };
 
 struct App {
@@ -65,6 +70,12 @@ struct App {
     bool swapCmdCtrl = true;
     bool clipboardEnabled = false;
     bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted
+    bool inputEnabled = true;     // account-wide keyboard/mouse pause
+    bool deviceReady = false, deviceEnabled = true, deviceControl = false, deviceTrusted = false, authVerified = false;
+    std::string fileToken;
+    bool operational() const { return hubConnected && deviceReady && deviceEnabled && deviceTrusted && authVerified; }
+    bool nativeProtocol = false;
+    std::string transportMode = "auto";
     bool captured = false, controlled = false;
     int screenX = 0, screenY = 0, screenW = 0, screenH = 0;  // virtual desktop in physical px
     double dpiScale = 1.0;

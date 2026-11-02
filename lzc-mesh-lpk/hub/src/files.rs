@@ -25,7 +25,7 @@ pub struct Files {
 
 /// Maps a user id to a directory name that cannot escape the root.
 fn user_dir(user: &str) -> String {
-    user.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    crate::store::account_key(user)
 }
 
 /// Accepts a plain file name only: no paths, no hidden names, no control characters.
@@ -135,7 +135,8 @@ mod tests {
         let files = Files::new(PathBuf::from("/data"));
         assert!(files.path("u", "../x").is_none());
         assert_eq!(files.path("u", "x.txt"), Some(PathBuf::from("/data/u/x.txt")));
-        assert_eq!(files.dir("../../root"), PathBuf::from("/data/______root"));
+        assert_eq!(files.dir("../../root").parent(),Some(std::path::Path::new("/data")));
+        assert_ne!(files.dir("a.b"),files.dir("a_b"));
     }
 
     #[test]

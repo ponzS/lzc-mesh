@@ -2,7 +2,7 @@
 // Notification-area icon with connection status, the sharing / clipboard /
 // autostart switches, open window, open management page and quit.
 namespace tray {
-enum { ID_TRAY_SHOW = 900, ID_TRAY_SHARING, ID_TRAY_CLIPBOARD, ID_TRAY_AUTOSTART, ID_TRAY_OPEN, ID_TRAY_QUIT };
+enum { ID_TRAY_SHOW = 900, ID_TRAY_SHARING, ID_TRAY_CLIPBOARD, ID_TRAY_AUTOSTART, ID_TRAY_OPEN, ID_TRAY_QUIT, ID_TRAY_CLIENT };
 void add(HWND owner);
 void remove();
 void refresh();                     // icon + tooltip from current state

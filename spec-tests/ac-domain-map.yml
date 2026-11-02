@@ -1,0 +1,25 @@
+domains:
+  connection:
+    paths:
+      - lzc-mesh-client/transport/**
+      - lzc-mesh-client/macos/Sources/**
+      - lzc-mesh-client/linux/src/**
+      - lzc-mesh-lpk/web/**
+      - spec-tests/device-*.py
+      - spec-tests/windows-outbox.cpp
+      - spec-tests/browser-probe.mjs
+      - lzc-mesh-client/windows/src/**
+      - lzc-mesh-client/windows/build.sh
+      - lzc-mesh-client/windows/zig-*.sh
+      - lzc-mesh-lpk/hub/src/**
+      - spec-tests/windows-parity.py
+      - spec-tests/windows-observer.cpp
+      - spec-tests/transport-probe.cpp
+      - spec-tests/hub_ws.py
+      - spec-tests/project-ac-executor
+  input:
+    paths:
+      - lzc-mesh-client/windows/src/input*
+      - lzc-mesh-client/windows/src/pointer_math.h
+      - lzc-mesh-client/windows/src/json.*
+      - spec-tests/windows-input.cpp

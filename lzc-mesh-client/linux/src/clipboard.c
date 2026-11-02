@@ -25,10 +25,12 @@ static struct {
     bool offer_text;  // current offer has a text mime type
     bool offer_secret;
     guint read_watch;
+    int read_fd;
+    bool active, skip_initial;
     GString *reading;
-} C;
+} C = {.read_fd = -1};
 
-static bool enabled(void) { return app.clipboard_enabled && app.hub_connected; }
+static bool enabled(void) { return C.active && app.clipboard_enabled && app_operational(); }
 
 static void remember(const char *text) {
     g_free(C.last);
@@ -46,7 +48,7 @@ static gboolean on_read(gint fd, GIOCondition cond, gpointer data) {
     }
     bool ok = n == 0;
     close(fd);
-    C.read_watch = 0;
+    C.read_watch = 0; C.read_fd = -1;
     if (ok && C.reading->len && g_utf8_validate(C.reading->str, C.reading->len, NULL) && g_strcmp0(C.reading->str, C.last) != 0) {
         remember(C.reading->str);
         if (enabled()) {
@@ -72,6 +74,7 @@ static void dev_offer(void *d, struct zwlr_data_control_device_v1 *dev, struct z
 }
 
 static void dev_selection(void *d, struct zwlr_data_control_device_v1 *dev, struct zwlr_data_control_offer_v1 *o) {
+    if (C.skip_initial) { C.skip_initial = false; if (o) zwlr_data_control_offer_v1_destroy(o); return; }
     if (!o) return;
     // Our own offer: nothing to read.
     if (C.source && C.owned) {
@@ -85,6 +88,7 @@ static void dev_selection(void *d, struct zwlr_data_control_device_v1 *dev, stru
             close(fds[1]);
             wl_display_flush(C.display);
             C.reading = g_string_new(NULL);
+            C.read_fd = fds[0];
             C.read_watch = g_unix_fd_add(fds[0], G_IO_IN | G_IO_HUP | G_IO_ERR, on_read, NULL);
         }
     }
@@ -124,7 +128,7 @@ static void src_cancelled(void *d, struct zwlr_data_control_source_v1 *s) {
 static const struct zwlr_data_control_source_v1_listener source_listener = {src_send, src_cancelled};
 
 void clipboard_set(const char *text, const char *from) {
-    if (!C.device || !text || !*text || !g_utf8_validate(text, -1, NULL)) return;
+    if (!enabled() || !C.device || !text || !*text || !g_utf8_validate(text, -1, NULL)) return;
     if (g_strcmp0(text, C.last) == 0) return;
     remember(text);
     if (C.source) zwlr_data_control_source_v1_destroy(C.source);
@@ -147,10 +151,25 @@ bool clipboard_bind(struct wl_display *display, struct wl_registry *registry, ui
 }
 
 void clipboard_start(struct wl_seat *seat) {
-    if (!C.manager || !seat || C.device) return;
     C.seat = seat;
-    C.device = zwlr_data_control_manager_v1_get_data_device(C.manager, seat);
-    zwlr_data_control_device_v1_add_listener(C.device, &device_listener, NULL);
+    if (app_operational()) clipboard_set_active(true);
 }
 
-bool clipboard_available(void) { return C.device != NULL; }
+void clipboard_set_active(bool on) {
+    C.active = on;
+    if (!on) {
+        if (C.read_watch) { g_source_remove(C.read_watch); C.read_watch = 0; }
+        if (C.read_fd >= 0) { close(C.read_fd); C.read_fd = -1; }
+        if (C.reading) { g_string_free(C.reading, TRUE); C.reading = NULL; }
+        if (C.device) { zwlr_data_control_device_v1_destroy(C.device); C.device = NULL; }
+        if (C.source) { zwlr_data_control_source_v1_destroy(C.source); C.source = NULL; }
+        g_clear_pointer(&C.owned, g_free); g_clear_pointer(&C.last, g_free);
+    } else if (C.manager && C.seat && !C.device) {
+        C.skip_initial = true; // Existing clipboard content is not a new copy after wake.
+        C.device = zwlr_data_control_manager_v1_get_data_device(C.manager, C.seat);
+        zwlr_data_control_device_v1_add_listener(C.device, &device_listener, NULL);
+    }
+    if (C.display) wl_display_flush(C.display);
+}
+
+bool clipboard_available(void) { return C.manager && C.seat; }

@@ -60,8 +60,8 @@ impl Pair {
     }
     fn settings(&self, n: usize, mode: &str, enabled: bool) {
         self.hub(n,json!({"t":"state","settings":{"transport_mode":mode,"input_enabled":enabled,"swap_cmd_ctrl":true},"devices":[
-            {"id":"a","platform":"macos","x":0.0,"y":0.0,"w":1000.0,"h":800.0,"online":true},
-            {"id":"b","platform":"linux","x":1000.0,"y":0.0,"w":1000.0,"h":800.0,"online":true}
+            {"id":"a","platform":"macos","x":0.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"trusted":true},
+            {"id":"b","platform":"linux","x":1000.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"trusted":true}
         ]}));
     }
     fn pump(&mut self) {
@@ -390,6 +390,63 @@ fn lost_final_position_is_repaired_without_requiring_another_user_event() {
             .any(|v| (v["x"].as_f64().unwrap() - 0.007).abs() < 0.00001)
     });
     assert!(p.injected(1, "button").is_empty());
+}
+
+#[test]
+fn dormant_receiver_closes_native_endpoint_and_does_not_replay_old_input_on_wake() {
+    let mut p = Pair::new("auto");
+    p.ready(); p.begin();
+    p.local(0, json!({"t":"key","code":30,"down":true}));
+    p.wait(Duration::from_secs(2), |p| p.injected(1,"key").len()==1);
+    p.hub(1,json!({"t":"state","settings":{"transport_mode":"auto","input_enabled":true},"devices":[
+        {"id":"a","platform":"macos","x":0.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"enabled":true,"trusted":true},
+        {"id":"b","platform":"windows","x":1000.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"enabled":false,"trusted":true}
+    ]}));
+    p.wait(Duration::from_secs(2), |p| !p.injected(1,"leave").is_empty() && p.adverts[1].as_ref().is_some_and(|a|a["certificate"]==""));
+    // The real hub also revokes the source's grant when either end sleeps.
+    p.hub(0,json!({"t":"direct_end","session":"test-session-1","warp":false}));
+    p.wait(Duration::from_secs(2), |p| !p.injected(0,"release").is_empty());
+    p.hub(1,json!({"t":"direct_relay","from":"a","data":{"kind":"input","input":{"session":"test-session-1","source":"a","target":"b","seq":99,"barrier":3,"x":1002.0,"y":80.0,"event":{"t":"key","code":31,"down":true}}}}));
+    p.settings(1,"auto",true);
+    for _ in 0..30 {p.pump();thread::sleep(Duration::from_millis(10));}
+    assert_eq!(p.injected(1,"key").len(),1,"replayed input from a dormant lifecycle");
+}
+
+#[test]
+fn revoked_trust_blocks_an_existing_quic_session_and_its_old_packets() {
+    let mut p=Pair::new("auto");p.ready();p.begin();
+    p.local(0,json!({"t":"key","code":30,"down":true}));
+    p.wait(Duration::from_secs(2),|p|p.injected(1,"key").len()==1);
+    p.hub(1,json!({"t":"state","settings":{"transport_mode":"auto","input_enabled":true},"devices":[
+        {"id":"a","platform":"macos","x":0.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"trusted":true},
+        {"id":"b","platform":"windows","x":1000.0,"y":0.0,"w":1000.0,"h":800.0,"online":true,"enabled":true,"trusted":false}
+    ]}));
+    p.wait(Duration::from_secs(2),|p|!p.injected(1,"leave").is_empty() && p.adverts[1].as_ref().is_some_and(|a|a["certificate"]==""));
+    let stale=json!({"t":"direct_relay","from":"a","data":{"kind":"input","input":{"session":"test-session-1","source":"a","target":"b","seq":99,"barrier":3,"x":1002.0,"y":80.0,"event":{"t":"key","code":31,"down":true}}}});
+    p.hub(1,stale.clone());
+    for _ in 0..20{p.pump();thread::sleep(Duration::from_millis(5));}
+    assert_eq!(p.injected(1,"key").len(),1);
+    p.settings(1,"auto",true);p.hub(1,stale);
+    for _ in 0..20{p.pump();thread::sleep(Duration::from_millis(5));}
+    assert_eq!(p.injected(1,"key").len(),1,"reapproval replayed a revoked session");
+}
+
+#[test]
+fn windows_dual_role_bluetooth_interoperates_with_existing_native_roles() {
+    let mac = json!({"role":"listener","address":"AA:BB:CC:DD:EE:01","channel":13});
+    let linux = json!({"role":"connector"});
+    let windows = json!({"role":"listener","connector":true,"address":"AA:BB:CC:DD:EE:02","channel":7});
+    let peer = |id: &str, bt: Value| model::Peer {
+        id:id.into(),certificate:String::new(),addresses:vec![],bluetooth:Some(bt),
+    };
+    assert!(router::bluetooth_can_dial("windows", &windows, &peer("mac", mac.clone())));
+    assert!(router::bluetooth_can_dial("linux", &linux, &peer("windows", windows.clone())));
+    assert!(router::bluetooth_can_dial("linux", &linux, &peer("mac", mac.clone())));
+    assert!(!router::bluetooth_can_dial("mac", &mac, &peer("windows", windows.clone())));
+    assert!(router::bluetooth_can_dial("a", &windows, &peer("b", windows.clone())));
+    assert!(!router::bluetooth_can_dial("b", &windows, &peer("a", windows.clone())));
+    assert!(!router::bluetooth_can_dial("windows", &windows, &peer("linux", linux)));
+    assert!(!router::bluetooth_can_dial("windows", &Value::Null, &peer("mac", mac)));
 }
 
 #[test]

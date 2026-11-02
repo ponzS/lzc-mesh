@@ -15,6 +15,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
     private let pillText = makeLabel("正在连接…", size: 12, color: Theme.muted)
     private let controlText = makeLabel("", size: 12, weight: .medium)
     private let sharingSwitch = ToggleSwitch()
+    private let clientSwitch = ToggleSwitch()
     private let swapSwitch = ToggleSwitch()
     private let autostartSwitch = ToggleSwitch()
     private let boxField = NSTextField()
@@ -183,6 +184,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
         let transportRow = NSStackView(views: [makeLabel("连接方式（所有设备）", size: 12), transportPicker])
         let settingsStack = NSStackView(views: [
             transportRow,
+            settingRow("客户端运行", "关闭全部共享，保留管理连接以便远程开启", clientSwitch, key: "client"),
             settingRow("开机自动启动", "登录系统后自动在菜单栏运行", autostartSwitch, key: "autostart"),
             settingRow("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", swapSwitch, key: "swap"),
             boxCol,
@@ -251,8 +253,11 @@ final class MainWindow: NSObject, NSWindowDelegate {
         pillText.stringValue = line
         controlText.stringValue = s.controlLine().map { "· " + $0 } ?? ""
         transportPicker.selectItem(at: transportModes.firstIndex(of: s.transportMode) ?? 0)
-        transportPicker.isEnabled = s.hubConnected
+        transportPicker.isEnabled = s.hubConnected && s.authVerified
         sharingSwitch.isOn = s.sharingEnabled
+        sharingSwitch.isEnabled = s.operational
+        clientSwitch.isOn = s.clientEnabled
+        clientSwitch.isEnabled = s.hubConnected && s.clientReady && s.clientControl
         autostartSwitch.isOn = LoginItem.isEnabled
         permRow.isHidden = s.status[.permission]?.0 == .ok
     }

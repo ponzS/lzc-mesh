@@ -2,7 +2,7 @@
 ID: SC-AUTOMATIC-LAN-DIRECT
 Profile: draft
 Gate: required
-Given 同一账号的 Mac 和 Linux 客户端在线且局域网可达
+Given 同一账号的新版客户端在线且局域网可达，包括 Windows 与 Mac 或 Linux 的组合
 When 用户将光标移入相邻设备并移动、点击、拖拽和滚动
 Then 输入优先直连，客户端显示直连状态，动作和位置保持一致
 And 非当前控制会话或未认证设备的输入不会注入桌面
@@ -29,9 +29,9 @@ And 按键、按钮和滚动阶段不因路径切换重复执行
 ID: SC-LOCAL-ROUTING-AND-RELEASE
 Profile: draft
 Gate: required
-Given 新版客户端与旧版客户端按屏幕布局排列
+Given 已批准的直连客户端与使用兼容输入格式的客户端按屏幕布局排列
 When 用户跨屏移动、按紧急收回快捷键或断开控制会话
-Then 控制权与屏幕归属一致，旧客户端仍可通过中枢使用
+Then 控制权与屏幕归属一致，已批准客户端仍可通过中枢的兼容输入格式使用
 And 会话结束后没有遗留按键、按钮或滚动状态
 
 
@@ -68,7 +68,7 @@ And 日志不记录输入字符，不将共享网络连接声称为两条独立�
 ID: SC-NATIVE-BLUETOOTH-MODE
 Profile: draft
 Gate: required
-Given 同一账号的 Mac 与 Omarchy 在线且宿主机蓝牙已与 Mac 配对
+Given 同一账号的不同平台新版客户端在线且已完成系统蓝牙配对，包括 Windows 连接 Mac 或 Linux 连接 Windows
 When 用户在任一本地客户端选择仅蓝牙并跨屏移动、点击、拖拽、输入和滚动
 Then 其他客户端与管理页面同步模式，输入通过经过双向认证的真实蓝牙连接传输
 And 蓝牙不可达时停止控制，不静默改走局域网或中转
@@ -81,3 +81,21 @@ Given 用户已建立蓝牙控制连接
 When 用户选择仅中转或暂停全部接力
 Then 蓝牙服务和输入连接关闭，控制权及按键、按钮按原有规则释放
 And 未通过同账号证书认证或已失效控制会话的蓝牙输入不能注入桌面
+
+# 场景 10：无蓝牙适配器时明确停止控制
+ID: SC-BLUETOOTH-UNAVAILABLE
+Profile: draft
+Gate: required
+Given Windows 客户端已连接中枢但系统未检测到蓝牙适配器
+When 用户在本地选择仅蓝牙并尝试跨屏
+Then 本地与管理页面同步模式，客户端明确提示蓝牙不可用，不能开始控制
+And 不创建局域网 UDP 监听、不通过中枢转发输入，恢复自动模式后可重新跨屏
+
+# 场景 11：管理发送不拖住已授权的直连输入
+ID: SC-MANAGEMENT-SEND-ISOLATION
+Profile: draft
+Gate: required
+Given Windows 正通过直连接收键鼠输入，管理连接正常且当前授权有效
+When 中枢消息的发送暂时排队，同时用户移动光标、拖拽或输入按键
+Then 直连输入不等待管理消息写完，动作和对应位置保持有序
+And 管理连接撤销或授权失效仍会安全停止控制，重连不会发送旧连接积压的输入

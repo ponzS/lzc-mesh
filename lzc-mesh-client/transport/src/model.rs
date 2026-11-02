@@ -23,6 +23,10 @@ pub struct Device {
     pub online: bool,
     #[serde(default = "yes")]
     pub sharing: bool,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub trusted: bool,
 }
 fn yes() -> bool {
     true
@@ -114,7 +118,7 @@ pub fn neighbour<'a>(
 ) -> Option<&'a Device> {
     devices
         .iter()
-        .filter(|d| d.online && d.sharing && d.id != from.id)
+        .filter(|d| d.online && d.enabled && d.trusted && d.sharing && d.id != from.id)
         .find(|d| match dir {
             "left" => (d.right() - from.x).abs() < 1.5 && gy >= d.y - 0.5 && gy <= d.bottom() + 0.5,
             "right" => {

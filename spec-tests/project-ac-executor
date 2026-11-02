@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""The project's single spec-executor.v1 entry point (Windows relay environment)."""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import importlib.util
+spec=importlib.util.spec_from_file_location('windows_parity',Path(__file__).with_name('windows-parity.py'))
+implementation=importlib.util.module_from_spec(spec);spec.loader.exec_module(implementation)
+local_spec=importlib.util.spec_from_file_location('device_lifecycle',Path(__file__).with_name('device-lifecycle.py'))
+local=importlib.util.module_from_spec(local_spec);local_spec.loader.exec_module(local)
+trust_spec=importlib.util.spec_from_file_location('device_trust',Path(__file__).with_name('device-trust.py'))
+trust=importlib.util.module_from_spec(trust_spec);trust_spec.loader.exec_module(trust)
+
+options=[
+ {'name':'--target','value':'<windows-relay|hub-lifecycle|hub-trust>','description':'Real environment to execute','default':'windows-relay'},
+ {'name':'--hub-bin','value':'<path>','description':'Hub executable for private lifecycle HTTP/browser tests','default':'lzc-mesh-lpk/content/lzc-mesh-hub'},
+ {'name':'--ssh-helper','value':'<path>','description':'Existing SSH helper accepting win and a PowerShell command; credentials stay outside this repository.'},
+ {'name':'--copy-helper','value':'<path>','description':'Existing copy helper accepting win, a local file and R:remote-path.'},
+ {'name':'--cookie-file','value':'<path>','description':'Private file containing an existing signed-in test account session; never written to reports.'},
+ {'name':'--hub','value':'<hostname>','description':'Real integration hub','default':'lzc-mesh.ponzs.heiyu.space'},
+ {'name':'--hub-address','value':'<IP>','description':'Optional numeric gateway address; TLS still validates the hub hostname.'},
+ {'name':'--artifacts','value':'<directory>','description':'Project-owned report directory','default':'spec-tests/.run-ac/windows-parity'},
+]
+parser=argparse.ArgumentParser()
+parser.add_argument('--action',choices=['help','discover','run'],required=True)
+parser.add_argument('--scenarios-file',type=Path)
+for option in options:parser.add_argument(option['name'],default=option.get('default'))
+args=parser.parse_args()
+try:
+ if args.action=='help':
+  result=dict(description='Real Windows relay and private hub/browser lifecycle checks. Native deployment observations supplement server conformance; LAN/Bluetooth hardware acceptance is not inferred.',options=options)
+ elif args.action=='discover':
+  result=dict(status='passed',implementations=[dict(scenario='connection/lan-direct/'+key,test_id='windows-relay/'+name) for key,name in implementation.SCENARIOS.items()]+[dict(scenario='connection/device-sharing/'+key,test_id='hub-lifecycle/'+name) for key,name in local.SCENARIOS.items()]+[dict(scenario='connection/device-trust/'+key,test_id='hub-trust/'+name) for key,name in trust.SCENARIOS.items()])
+ else:
+  if not args.scenarios_file:raise ValueError('run requires --scenarios-file')
+  if args.target=='windows-relay':
+   if not args.ssh_helper or not args.copy_helper or not args.cookie_file:raise ValueError('Windows target requires SSH/copy helpers and --cookie-file')
+   args.ssh_helper=str(Path(args.ssh_helper).resolve());args.copy_helper=str(Path(args.copy_helper).resolve())
+   if not Path(args.ssh_helper).is_file() or not Path(args.copy_helper).is_file():raise ValueError('SSH/copy helper unavailable')
+   args.cookie=Path(args.cookie_file).read_text().strip()
+   if not args.cookie:raise ValueError('Empty test account session file')
+  elif args.target in ('hub-lifecycle','hub-trust'):
+   args.hub_bin=Path(args.hub_bin).resolve()
+   if not args.hub_bin.is_file():raise ValueError('Build the hub executable first')
+  else:raise ValueError('Unknown test environment')
+  args.artifacts=Path(args.artifacts).resolve()
+  scenarios=json.loads(args.scenarios_file.read_text())['scenarios']
+  if not scenarios:raise ValueError('No scenarios selected')
+  backend={'hub-lifecycle':local,'hub-trust':trust,'windows-relay':implementation}[args.target]
+  result=backend.execute(args,scenarios)
+ print(json.dumps(result,ensure_ascii=False))
+ sys.exit(0 if result.get('status','passed')=='passed' else 1)
+except Exception as error:
+ print(str(error),file=sys.stderr)
+ print(json.dumps(dict(status='failed',results=[],error=str(error)),ensure_ascii=False))
+ sys.exit(1)

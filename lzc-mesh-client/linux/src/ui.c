@@ -13,7 +13,7 @@
 #include "ui.h"
 
 static GtkWidget *window, *layout_view, *log_view, *box_entry, *open_btn;
-static GtkWidget *sharing_switch, *swap_switch, *autostart_switch;
+static GtkWidget *sharing_switch, *swap_switch, *autostart_switch, *client_switch;
 static GtkWidget *pill_dot, *pill_text, *control_text;
 static GtkWidget *status_dot[S_COUNT], *status_text[S_COUNT];
 static GtkWidget *transport_picker;
@@ -70,6 +70,11 @@ static void set_dot(GtkWidget *dot, StatusLevel lv) {
 static void sync_switches(void) {
     updating = true;
     gtk_switch_set_active(GTK_SWITCH(sharing_switch), app.sharing_enabled);
+    gtk_widget_set_sensitive(sharing_switch, app_operational());
+    if (client_switch) {
+        gtk_switch_set_active(GTK_SWITCH(client_switch), app.device_enabled);
+        gtk_widget_set_sensitive(client_switch, app.hub_connected && app.device_ready && app.device_control);
+    }
     gtk_switch_set_active(GTK_SWITCH(swap_switch), app.swap_cmd_ctrl);
     gtk_switch_set_active(GTK_SWITCH(autostart_switch), autostart_enabled());
     if (transport_picker) {
@@ -77,7 +82,7 @@ static void sync_switches(void) {
         for (guint i=0;i<G_N_ELEMENTS(transport_modes);i++)
             if (!g_strcmp0(app.transport_mode,transport_modes[i])) selected=i;
         gtk_drop_down_set_selected(GTK_DROP_DOWN(transport_picker),selected);
-        gtk_widget_set_sensitive(transport_picker,app.hub_connected);
+        gtk_widget_set_sensitive(transport_picker,app.hub_connected && app.auth_verified);
     }
     updating = false;
 }
@@ -194,6 +199,11 @@ static void on_box_apply(GtkWidget *w, gpointer u) {
     lzc_invalidate_cookie();
     net_disconnect();
     lzc_refresh();
+}
+
+static gboolean on_client(GtkSwitch *s, gboolean state, gpointer u) {
+    if (!updating) app_set_enabled(state);
+    return !updating;
 }
 
 static gboolean on_sharing(GtkSwitch *s, gboolean state, gpointer u) {
@@ -332,6 +342,7 @@ static void on_transport_mode(GObject *object, GParamSpec *pspec, gpointer unuse
 
 static GtkWidget *build_settings(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_box_append(GTK_BOX(box), setting_row("客户端运行", "关闭全部共享，保留管理连接以便远程开启", &client_switch, G_CALLBACK(on_client)));
     gtk_box_append(GTK_BOX(box), setting_row("开机自动启动", "登录系统后自动在托盘运行", &autostart_switch, G_CALLBACK(on_autostart)));
     gtk_box_append(GTK_BOX(box), setting_row("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", &swap_switch, G_CALLBACK(on_swap)));
     const char *choices[]={"自动（局域网优先）","仅蓝牙","仅局域网直连","仅中枢转发",NULL};

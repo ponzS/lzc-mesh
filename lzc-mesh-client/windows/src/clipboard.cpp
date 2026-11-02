@@ -9,6 +9,8 @@ HWND owner;
 std::wstring lastText;
 const size_t kMaxBytes = 256 * 1024;
 UINT fmtExclude, fmtCanHistory, fmtCanCloud;
+bool active = false;
+DWORD sequence = 0;
 
 // Password managers mark secrets with these formats (Windows clipboard history
 // convention); such content must never leave the machine.
@@ -41,11 +43,23 @@ void start(HWND hwnd) {
     fmtExclude = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     fmtCanHistory = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
     fmtCanCloud = RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
-    AddClipboardFormatListener(hwnd);
+}
+
+void setActive(bool on) {
+    if (active == on) return;
+    active = on;
+    lastText.clear();
+    sequence = GetClipboardSequenceNumber(); // Never publish a change that happened during dormancy.
+    if (on) AddClipboardFormatListener(owner);
+    else RemoveClipboardFormatListener(owner);
 }
 
 void onUpdate() {
-    if (!g.clipboardEnabled || !g.hubConnected) return;
+    if (!active || !g.operational()) return;
+    const auto current = GetClipboardSequenceNumber();
+    if (current == sequence) return;
+    sequence = current;
+    if (!g.clipboardEnabled) return;
     if (GetClipboardOwner() == owner) return;  // our own write
     if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !openClipboard()) return;
     std::wstring text;
@@ -71,7 +85,7 @@ void onUpdate() {
 }
 
 void set(const std::string &utf8, const std::string &from) {
-    if (!g.clipboardEnabled || utf8.empty()) return;
+    if (!active || !g.operational() || !g.clipboardEnabled || utf8.empty()) return;
     std::wstring text = widen(utf8);
     if (text == lastText) return;
     if (!openClipboard()) {

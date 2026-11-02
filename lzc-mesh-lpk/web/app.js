@@ -16,6 +16,8 @@ const pauseAll = document.getElementById("pause-all")
 const inputNote = document.getElementById("input-note")
 const transportStatuses = new Map()
 const channelStatuses = new Map()
+const pendingDevices = new Map()
+const pendingTrust = new Map()
 
 const PLATFORM = { macos: "macOS", windows: "Windows", linux: "Linux" }
 let ws = null
@@ -28,6 +30,7 @@ function setStatus(text, ok) {
   dot.classList.toggle("ok", !!ok)
   transportMode.disabled = !ok
   pauseAll.disabled = !ok
+  renderList()
 }
 
 function connect() {
@@ -42,6 +45,8 @@ function connect() {
     if (msg.t === "welcome") setStatus(`已连接 · ${msg.user}`, true)
     if (msg.t === "state") {
       state = msg
+      for (const [id, enabled] of pendingDevices) if (state.devices.some(d => d.id === id && d.enabled === enabled)) pendingDevices.delete(id)
+      for (const [id, request] of pendingTrust) if (state.devices.some(d => d.id === id && d.fingerprint === request.fingerprint && d.trusted === request.approved)) pendingTrust.delete(id)
       if (!drag) render()
     }
     if (msg.t === "transport_status") {
@@ -53,9 +58,11 @@ function connect() {
       renderList()
     }
     if (msg.t === "files") renderFiles(msg.files)
-    if (msg.t === "error") alert(msg.message)
+    if (msg.t === "error") { pendingDevices.clear(); pendingTrust.clear(); renderList(); alert(msg.message) }
   }
   ws.onclose = () => {
+    pendingDevices.clear()
+    pendingTrust.clear()
     setStatus("连接断开，正在重连…", false)
     setTimeout(connect, 1500)
   }
@@ -88,7 +95,7 @@ function render() {
   clipboardToggle.checked = !!state.settings?.clipboard
   transportMode.value = state.settings?.transport_mode || "auto"
   const enabled = state.settings?.input_enabled !== false
-  pauseAll.textContent = enabled ? "暂停全部设备接力" : "恢复设备接力"
+  pauseAll.textContent = enabled ? "暂停全部键鼠接力" : "恢复键鼠接力"
   pauseAll.classList.toggle("paused", !enabled)
   transportNote.textContent = {
     auto: "局域网可达时自动直连，不可达时通过中枢转发。",
@@ -97,7 +104,7 @@ function render() {
     relay: "全部输入通过中枢转发，客户端关闭蓝牙入口、局域网监听和探测。",
   }[transportMode.value]
   inputNote.textContent = enabled
-    ? "暂停会结束当前控制、释放按键，并关闭全部新版客户端的直连入口。"
+    ? "总开关只暂停键鼠：结束控制、释放按键并关闭直连入口；剪贴板和文件不受影响。"
     : "所有设备的键鼠接力已暂停。恢复后再次跨屏即可控制。"
   empty.style.display = state.devices.length ? "none" : "flex"
   const seen = new Set()
@@ -112,9 +119,10 @@ function render() {
       el.addEventListener("pointerdown", startDrag)
       stage.appendChild(el)
     }
-    const activeRole = state.settings?.input_enabled === false && d.online ? "接力已暂停" : state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : d.online && d.sharing === false ? "已暂停" : ""
+    const activeRole = d.trusted !== true ? "未获信任" : d.enabled === false ? "客户端已关闭" : state.settings?.input_enabled === false && d.online ? "键鼠已暂停" : state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : d.online && d.sharing === false ? "已暂停" : ""
     el.classList.toggle("offline", !d.online)
-    el.classList.toggle("active", !!activeRole)
+    el.classList.toggle("active", state.active?.source === d.id || state.active?.target === d.id)
+    el.classList.toggle("dormant", d.enabled === false)
     el.querySelector(".name").textContent = d.name
     el.querySelector(".meta").textContent = `${PLATFORM[d.platform] || d.platform} · ${Math.round(d.w)}×${Math.round(d.h)}`
     el.querySelector(".badge").textContent = activeRole || (d.online ? "" : "离线")
@@ -130,39 +138,94 @@ function render() {
 }
 
 function renderList() {
-  list.innerHTML = ""
+  // Keep keyed controls alive: status updates must not steal keyboard focus or
+  // replace a switch while a finger is touching it.
+  list.querySelector(".no-devices")?.remove()
+  const seen = new Set()
   for (const d of state.devices) {
-    const li = document.createElement("li")
-    const info = document.createElement("div")
-    info.innerHTML = `<div></div><div class="meta"></div>`
-    info.children[0].textContent = d.name
-    info.children[1].textContent = `${PLATFORM[d.platform] || d.platform} · ${d.online ? (d.sharing === false ? "在线 · 已暂停键鼠共享" : "在线") : "离线"}${d.version ? " · v" + d.version : ""}`
-    if (d.online && transportStatuses.has(d.id)) {
-      const path = document.createElement("div")
-      path.className = "meta transport-status"
-      path.textContent = transportStatuses.get(d.id)
-      info.appendChild(path)
+    seen.add(d.id)
+    let li = list.querySelector(`[data-device="${CSS.escape(d.id)}"]`)
+    if (!li) {
+      li = document.createElement("li")
+      li.dataset.device = d.id
+      li.innerHTML = `<div class="device-info"></div><div class="device-actions"><button type="button" class="device-trust"></button><button type="button" class="device-switch" role="switch"></button><button type="button" class="remove-device">移除</button></div>`
+      li.querySelector(".device-switch").addEventListener("click", () => {
+        const device = state.devices.find(device => device.id === d.id)
+        if (!device || device.trusted !== true || pendingDevices.has(d.id) || ws?.readyState !== WebSocket.OPEN) return
+        const enabled = device.enabled === false
+        pendingDevices.set(d.id, enabled)
+        send({ t: "device_enabled", id: d.id, enabled })
+        renderList()
+      })
+      li.querySelector(".device-trust").addEventListener("click", () => {
+        const device = state.devices.find(device => device.id === d.id)
+        if (!device || !/^[a-f0-9]{64}$/.test(device.fingerprint || "") || pendingTrust.has(d.id) || ws?.readyState !== WebSocket.OPEN) return
+        const approved = device.trusted !== true
+        const explanation = approved ? "请与该客户端显示的完整设备指纹核对。批准后允许参与共享。" : "撤销后停止共享；运行开关不能恢复信任，必须重新批准。"
+        if (!confirm(`${approved ? "批准" : "撤销信任"}：${device.name}\n\n指纹：${device.fingerprint}\n\n${explanation}`)) return
+        pendingTrust.set(d.id, { approved, fingerprint: device.fingerprint })
+        send({ t: "device_trust", id: d.id, fingerprint: device.fingerprint, approved })
+        renderList()
+      })
+      li.querySelector(".remove-device").addEventListener("click", () => {
+        if (confirm("移除离线设备也会删除其信任绑定，再次加入需要批准。是否继续？")) send({ t: "forget", id: d.id })
+      })
+      list.appendChild(li)
     }
-    if (d.online) {
+    const info = li.querySelector(".device-info")
+    info.replaceChildren()
+    const name = document.createElement("div")
+    name.textContent = d.name
+    const meta = document.createElement("div")
+    meta.className = "meta"
+    const lifecycle = d.trusted !== true ? (d.approval_status === "revoked" ? "信任已撤销 · 共享停用" : "待批准 · 共享停用") : d.enabled === false ? "客户端已关闭" : d.online && d.sharing === false ? "键鼠已暂停" : "客户端已开启"
+    meta.textContent = `${PLATFORM[d.platform] || d.platform} · ${d.online ? "在线" : "离线"} · ${lifecycle}${d.version ? " · v" + d.version : ""}`
+    info.append(name, meta)
+    if (d.fingerprint) {
+      const fingerprint = document.createElement("code")
+      fingerprint.className = "device-fingerprint"
+      fingerprint.textContent = d.fingerprint
+      fingerprint.setAttribute("aria-label", `${d.name} 设备指纹`)
+      info.appendChild(fingerprint)
+    }
+    const trust = li.querySelector(".device-trust")
+    trust.textContent = pendingTrust.has(d.id) ? "处理中…" : d.trusted === true ? "撤销信任" : d.approval_status === "revoked" ? "重新批准" : "批准设备"
+    trust.setAttribute("aria-label", `${d.name} ${d.trusted === true ? "撤销信任" : "批准设备"}`)
+    trust.setAttribute("aria-busy", String(pendingTrust.has(d.id)))
+    trust.disabled = !d.fingerprint || pendingTrust.has(d.id) || ws?.readyState !== WebSocket.OPEN
+    const pending = pendingDevices.has(d.id)
+    if (pending) {
+      const progress = document.createElement("div")
+      progress.className = "meta"
+      progress.setAttribute("role", "status")
+      progress.textContent = pendingDevices.get(d.id) ? "正在开启…" : "正在关闭…"
+      info.appendChild(progress)
+    }
+    if (d.online && d.enabled !== false && d.trusted === true) {
       const channels = channelStatuses.get(d.id) || {}
-      for (const [channel, label] of [["pointer", "光标"], ["keyboard", "键盘"]]) {
-        if (!channels[channel]) continue
+      for (const text of [transportStatuses.get(d.id), channels.pointer && `光标：${channels.pointer}`, channels.keyboard && `键盘：${channels.keyboard}`]) {
+        if (!text) continue
         const line = document.createElement("div")
         line.className = "meta transport-status"
-        line.textContent = `${label}：${channels[channel]}`
+        line.textContent = text
         info.appendChild(line)
       }
     }
-    li.appendChild(info)
-    if (!d.online) {
-      const btn = document.createElement("button")
-      btn.textContent = "移除"
-      btn.onclick = () => send({ t: "forget", id: d.id })
-      li.appendChild(btn)
-    }
-    list.appendChild(li)
+    const toggle = li.querySelector(".device-switch")
+    toggle.setAttribute("aria-label", `${d.name} 客户端运行`)
+    toggle.setAttribute("aria-checked", String(d.enabled !== false && d.trusted === true))
+    toggle.setAttribute("aria-busy", String(pending))
+    toggle.title = d.enabled === false ? "开启客户端共享功能" : "关闭全部共享功能，保留远程唤醒连接"
+    toggle.disabled = d.trusted !== true || pending || ws?.readyState !== WebSocket.OPEN || typeof d.enabled !== "boolean"
+    li.querySelector(".remove-device").hidden = d.online
   }
-  if (!state.devices.length) list.innerHTML = `<li class="meta">暂无设备</li>`
+  for (const li of list.querySelectorAll("[data-device]")) if (!seen.has(li.dataset.device)) li.remove()
+  if (!state.devices.length) {
+    const empty = document.createElement("li")
+    empty.className = "meta no-devices"
+    empty.textContent = "暂无设备"
+    list.appendChild(empty)
+  }
 }
 
 function startDrag(ev) {

@@ -95,7 +95,7 @@ static const char item_xml[] =
     "</interface></node>";
 
 static GVariant *item_get(GDBusConnection *c, const char *sender, const char *path, const char *iface, const char *prop, GError **err, gpointer u) {
-    bool on = app.hub_connected && app.sharing_enabled;
+    bool on = app_operational() && app.sharing_enabled;
     if (!strcmp(prop, "Category")) return g_variant_new_string("ApplicationStatus");
     if (!strcmp(prop, "Id")) return g_variant_new_string("lzc-mesh");
     if (!strcmp(prop, "Title")) return g_variant_new_string("懒猫设备接力");
@@ -125,7 +125,7 @@ static const GDBusInterfaceVTable item_vtable = {item_call, item_get, NULL, {0}}
 
 // ------------------------------------------------------------------ com.canonical.dbusmenu
 
-enum { M_ROOT = 0, M_STATUS, M_CONTROL, M_SEP1, M_SHARING, M_CLIPBOARD, M_AUTOSTART, M_SEP2, M_SHOW, M_OPEN, M_SEP3, M_QUIT, M_COUNT };
+enum { M_ROOT = 0, M_STATUS, M_CONTROL, M_SEP1, M_SHARING, M_CLIPBOARD, M_AUTOSTART, M_SEP2, M_SHOW, M_OPEN, M_SEP3, M_QUIT, M_CLIENT, M_COUNT };
 
 static const char menu_xml[] =
     "<node><interface name='com.canonical.dbusmenu'>"
@@ -169,8 +169,9 @@ static GVariant *item_props(int id) {
         visible = text != NULL;
         enabled = false;
         break;
-    case M_SHARING: text = g_strdup("键鼠共享"); toggle = app.sharing_enabled; break;
-    case M_CLIPBOARD: text = g_strdup("共享剪贴板"); toggle = app.clipboard_enabled; enabled = app.hub_connected; break;
+    case M_CLIENT: text = g_strdup("客户端运行"); toggle = app.device_enabled; enabled = app.hub_connected && app.device_ready && app.device_control; break;
+    case M_SHARING: text = g_strdup("键鼠共享"); toggle = app.sharing_enabled; enabled = app_operational(); break;
+    case M_CLIPBOARD: text = g_strdup("共享剪贴板"); toggle = app.clipboard_enabled; enabled = app_operational(); break;
     case M_AUTOSTART: text = g_strdup("开机自动启动"); toggle = autostart_enabled(); break;
     case M_SHOW: text = g_strdup("打开主窗口"); break;
     case M_OPEN: text = g_strdup("打开管理页面"); enabled = app.box_domain && *app.box_domain; break;
@@ -191,13 +192,15 @@ static GVariant *item_props(int id) {
 static GVariant *layout_node(int id, int depth) {
     GVariantBuilder kids;
     g_variant_builder_init(&kids, G_VARIANT_TYPE("av"));
+    static const int order[] = {M_STATUS, M_CONTROL, M_SEP1, M_CLIENT, M_SHARING, M_CLIPBOARD, M_AUTOSTART, M_SEP2, M_SHOW, M_OPEN, M_SEP3, M_QUIT};
     if (id == M_ROOT && depth != 0)
-        for (int i = 1; i < M_COUNT; i++) g_variant_builder_add(&kids, "v", layout_node(i, depth - 1));
+        for (guint i = 0; i < G_N_ELEMENTS(order); i++) g_variant_builder_add(&kids, "v", layout_node(order[i], depth - 1));
     return g_variant_new("(i@a{sv}@av)", id, item_props(id), g_variant_builder_end(&kids));
 }
 
 static void on_menu_event(int id) {
     switch (id) {
+    case M_CLIENT: app_set_enabled(!app.device_enabled); break;
     case M_SHARING: app_set_sharing(!app.sharing_enabled); break;
     case M_CLIPBOARD: net_send_clipboard_setting(!app.clipboard_enabled); break;
     case M_AUTOSTART: ui_toggle_autostart(); break;
@@ -322,7 +325,7 @@ void tray_refresh(void) {
     StatusLevel lv;
     char *summary = app_summary(&lv);
     char *ctrl = app_control_line();
-    char *key = g_strdup_printf("%d|%d|%d|%d|%d|%s|%s|%s", app.hub_connected, app.sharing_enabled, app.clipboard_enabled, app.captured, app.controlled,
+    char *key = g_strdup_printf("%d|%d|%d|%d|%d|%d|%d|%s|%s|%s", app.device_enabled, app.device_ready, app.hub_connected, app.sharing_enabled, app.clipboard_enabled, app.captured, app.controlled,
                                 summary, ctrl ? ctrl : "", app.box_domain ? app.box_domain : "");
     g_free(summary);
     g_free(ctrl);

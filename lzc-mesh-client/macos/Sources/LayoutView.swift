@@ -62,7 +62,7 @@ final class LayoutView: NSView {
             let d = s.devices[i]
             let r = rect(i)
             let me = d.id == s.deviceID
-            let role = d.id == s.activeTarget ? "受控中" : d.id == s.activeSource ? "控制中" : (d.online && !d.sharing ? "已暂停" : (d.online ? "" : "离线"))
+            let role = !d.enabled ? "已关闭" : d.id == s.activeTarget ? "受控中" : d.id == s.activeSource ? "控制中" : (d.online && !d.sharing ? "已暂停" : (d.online ? "" : "离线"))
             let active = d.id == s.activeSource || d.id == s.activeTarget
             let path = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
             if i == dragIndex {
@@ -100,6 +100,7 @@ final class LayoutView: NSView {
     }
 
     override func mouseDown(with e: NSEvent) {
+        guard AppState.shared.operational else { return }
         guard AppState.shared.hubConnected else { return }
         let p = convert(e.locationInWindow, from: nil)
         for i in AppState.shared.devices.indices.reversed() {

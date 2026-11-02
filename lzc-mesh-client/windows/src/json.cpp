@@ -110,11 +110,28 @@ struct Parser {
         if (lit("true")) { v.type = Json::Bool; v.b = true; return true; }
         if (lit("false")) { v.type = Json::Bool; v.b = false; return true; }
         if (lit("null")) { v.type = Json::Null; return true; }
-        char *e = nullptr;
-        std::string num(p, std::min<size_t>(end - p, 64));
-        double d = strtod(num.c_str(), &e);
-        if (e == num.c_str()) return false;
-        p += e - num.c_str();
+        const char *start = p;
+        if (*p == '-') p++;
+        if (p == end) return false;
+        if (*p == '0') p++;
+        else {
+            if (*p < '1' || *p > '9') return false;
+            while (p < end && *p >= '0' && *p <= '9') p++;
+        }
+        if (p < end && *p == '.') {
+            p++;
+            if (p == end || *p < '0' || *p > '9') return false;
+            while (p < end && *p >= '0' && *p <= '9') p++;
+        }
+        if (p < end && (*p == 'e' || *p == 'E')) {
+            p++;
+            if (p < end && (*p == '+' || *p == '-')) p++;
+            if (p == end || *p < '0' || *p > '9') return false;
+            while (p < end && *p >= '0' && *p <= '9') p++;
+        }
+        const std::string num(start, p);
+        double d = strtod(num.c_str(), nullptr);
+        if (!std::isfinite(d)) return false;
         v.type = Json::Num;
         v.n = d;
         return true;
@@ -125,7 +142,37 @@ struct Parser {
 bool Json::parse(const std::string &text, Json &out) {
     Parser ps{text.data(), text.data() + text.size()};
     out = Json();
-    return ps.value(out, 0);
+    if (!ps.value(out, 0)) return false;
+    ps.ws();
+    return ps.p == ps.end;
+}
+
+std::string Json::dump() const {
+    switch (type) {
+    case Null: return "null";
+    case Bool: return b ? "true" : "false";
+    case Num: {
+        if (!std::isfinite(n)) return "null";
+        char buf[32];
+        snprintf(buf, sizeof buf, "%.17g", n);
+        return buf;
+    }
+    case Str: return JsonOut::esc(s);
+    case Arr: {
+        std::string out = "[";
+        for (size_t i = 0; i < a.size(); i++) { if (i) out += ','; out += a[i].dump(); }
+        return out + "]";
+    }
+    case Obj: {
+        std::string out = "{";
+        for (const auto &entry : o) {
+            if (out.size() > 1) out += ',';
+            out += JsonOut::esc(entry.first) + ":" + entry.second.dump();
+        }
+        return out + "}";
+    }
+    }
+    return "null";
 }
 
 std::string JsonOut::esc(const std::string &v) {
@@ -149,7 +196,7 @@ JsonOut &JsonOut::n(const char *k, double v) {
     key(k);
     char b[32];
     if (!std::isfinite(v)) v = 0;
-    snprintf(b, sizeof b, "%.6g", v);
+    snprintf(b, sizeof b, "%.17g", v);
     buf += b;
     return *this;
 }

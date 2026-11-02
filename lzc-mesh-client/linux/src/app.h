@@ -25,6 +25,7 @@ enum {
     S_TRANSPORT,   // active LAN/relay path
     S_POINTER_CHANNEL,
     S_KEYBOARD_CHANNEL,
+    S_TRUST,
     S_COUNT
 };
 
@@ -36,6 +37,7 @@ typedef struct {
     double x, y, w, h;
     bool online;
     bool sharing;
+    bool enabled;
 } MeshDevice;
 
 typedef struct {
@@ -53,6 +55,8 @@ typedef struct {
 
     // Hub state
     bool hub_connected;
+    bool device_ready, device_enabled, device_control, device_trusted, auth_verified;
+    char *file_token;
     char *hub_user;
     GPtrArray *devices;  // MeshDevice*
     char *active_source, *active_target;
@@ -80,4 +84,7 @@ char *app_summary(StatusLevel *level);
 // "正在控制 X" / "X 正在控制本机", or NULL when idle.
 char *app_control_line(void);
 void app_set_sharing(bool on);
+bool app_operational(void);
+void app_refresh_activity(void);
+void app_set_enabled(bool on);
 void app_quit(void);

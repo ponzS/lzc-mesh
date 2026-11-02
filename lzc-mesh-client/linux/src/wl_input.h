@@ -5,6 +5,7 @@
 // another device, and injection while being controlled.
 void wl_input_init(void);
 void wl_input_shutdown(void);
+void wl_input_set_active(bool on);
 void wl_input_set_edges(bool left, bool right, bool up, bool down);
 void wl_input_capture(bool on);
 void wl_input_warp(double nx, double ny);       // normalised over the local desktop

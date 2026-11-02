@@ -31,7 +31,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
         img.isTemplate = true
         item.button?.image = img
-        item.button?.appearsDisabled = !s.sharingEnabled || !s.hubConnected
+        item.button?.appearsDisabled = !s.sharingEnabled || !s.operational
     }
 
     private func add(_ title: String, key: String? = nil, state: Bool? = nil, enabled: Bool = true) {
@@ -53,8 +53,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         add(line)
         if let c = s.controlLine() { add(c) }
         menu.addItem(.separator())
-        add("键鼠共享", key: "sharing", state: s.sharingEnabled)
-        add("共享剪贴板", key: "clipboard", state: s.clipboardEnabled, enabled: s.hubConnected)
+        add("客户端运行", key: "client", state: s.clientEnabled, enabled: s.hubConnected && s.clientReady && s.clientControl)
+        add("键鼠共享", key: "sharing", state: s.sharingEnabled, enabled: s.operational)
+        add("共享剪贴板", key: "clipboard", state: s.clipboardEnabled, enabled: s.operational)
         add("开机自动启动", key: "autostart", state: LoginItem.isEnabled)
         menu.addItem(.separator())
         add("打开主窗口", key: "show")

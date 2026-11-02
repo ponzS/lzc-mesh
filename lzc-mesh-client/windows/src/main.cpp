@@ -1,7 +1,9 @@
 // 懒猫设备接力 (LZC Mesh) for Windows: tray icon, main window (mainwin.cpp), hub messages.
 #include "app.h"
 #include "autostart.h"
+#include "bluetooth.h"
 #include "clipboard.h"
+#include "direct.h"
 #include "files.h"
 #include "layoutview.h"
 #include "mainwin.h"
@@ -19,6 +21,7 @@
 #include <cstdio>
 
 #include "input.h"
+#include "identity.h"
 #include "lzc.h"
 #include "net.h"
 
@@ -35,7 +38,8 @@ bool quitting = false;
 
 enum { ID_TIMER = 1, ID_FG_TIMER = 2 };
 
-const wchar_t *labels[S_COUNT] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板"};
+constexpr const wchar_t *labels[] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板", L"输入通道", L"光标通道", L"键盘通道", L"设备信任"};
+static_assert(sizeof(labels)/sizeof(*labels)==S_COUNT,"Every status needs a diagnostic label");
 
 std::wstring configPath() {
     wchar_t home[MAX_PATH];
@@ -85,14 +89,20 @@ const MeshDevice *deviceById(const std::string &id) {
 }
 
 void updateControlStatus() {
+    if (g.hubConnected && !g.authVerified) { setStatus(S_CONTROL,L_WARN,L"设备未获信任，共享保持停用；请核对指纹并批准"); return; }
+    if (g.deviceReady && !g.deviceEnabled) { setStatus(S_CONTROL, L_WARN, L"客户端已关闭，可在管理页面或本机重新开启"); return; }
     auto name = [](const std::string &id) { auto *d = deviceById(id); return widen(d ? d->name : id); };
     if (g.captured) setStatus(S_CONTROL, L_OK, L"本机正在控制 " + name(g.activeTarget) + L"（Ctrl+Alt+Esc 收回）");
     else if (g.controlled) setStatus(S_CONTROL, L_OK, name(g.activeSource) + L" 正在控制本机");
+    else if (!g.inputEnabled) setStatus(S_CONTROL, L_WARN, L"全部设备接力已暂停，可在管理页面或本地设置中恢复");
+    else if (!g.sharingEnabled) setStatus(S_CONTROL, L_UNKNOWN, L"本机键鼠共享已暂停");
     else setStatus(S_CONTROL, L_UNKNOWN, L"空闲：把光标移出屏幕边缘即可控制相邻设备");
 }
 
 void updateClipboardStatus() {
-    if (!g.hubConnected) setStatus(S_CLIPBOARD, L_UNKNOWN, L"等待连接中枢");
+    if (g.hubConnected && !g.authVerified) setStatus(S_CLIPBOARD,L_UNKNOWN,L"设备未获信任，双向剪贴板已停用");
+    else if (g.deviceReady && !g.deviceEnabled) setStatus(S_CLIPBOARD, L_UNKNOWN, L"客户端已关闭，双向剪贴板已停用");
+    else if (!g.hubConnected) setStatus(S_CLIPBOARD, L_UNKNOWN, L"等待连接中枢");
     else if (g.clipboardEnabled) setStatus(S_CLIPBOARD, L_OK, L"已开启：复制的文本会同步到其他在线设备");
     else setStatus(S_CLIPBOARD, L_UNKNOWN, L"已关闭（可在管理页面或托盘菜单中开启）");
 }
@@ -103,13 +113,42 @@ void updateScreenStatus() {
                                   (int)std::lround(g.dpiScale * 100), g.screenW / g.dpiScale, g.screenH / g.dpiScale));
 }
 
+void onInputMessage(const Json &o);
+
+void refreshClientActivity() {
+    static bool was = false;
+    const bool on = g.operational();
+    if (was != on) {
+        was = on;
+        files::setActive(on);
+        clipboard::setActive(on);
+        if (on) { direct::connected(onInputMessage); input::start(); }
+        else {
+            direct::disconnect();
+            bluetooth::stop();
+            input::stop();
+            g.captured = g.controlled = false;
+            input::setEdges(false, false, false, false);
+            files::update({});
+            files::setStatusText(g.deviceReady && !g.deviceEnabled ? L"客户端已关闭，文件共享已停用" : L"等待设备状态确认");
+        }
+        logLine(on ? L"客户端已开启" : L"客户端已休眠：共享功能已停止，保留远程唤醒连接");
+    }
+    input::setSharing(on && g.sharingEnabled && g.inputEnabled);
+    if (!on) {
+        setStatus(S_INPUT, L_UNKNOWN, L"客户端未运行共享功能，输入钩子已停止");
+        for (int key : {S_TRANSPORT, S_POINTER_CHANNEL, S_KEYBOARD_CHANNEL}) setStatus(key, L_UNKNOWN,
+            g.deviceReady && !g.deviceEnabled ? L"客户端已关闭 · 仅保留远程唤醒连接" : L"等待设备状态确认");
+    }
+}
+
 void sendHello() {
+    if (!identity::init()) return;
     wchar_t name[256];
     DWORD n = 256;
     GetComputerNameExW(ComputerNamePhysicalDnsHostname, name, &n);
-    hubws::send(JsonOut().s("t", "hello").s("id", g.deviceId).s("name", narrow(name)).s("platform", "windows")
-                    .n("w", g.screenW / g.dpiScale).n("h", g.screenH / g.dpiScale).s("version", LZC_MESH_VERSION).str());
-    if (!g.sharingEnabled) hubws::send(JsonOut().s("t", "sharing").b("enabled", false).str());
+    hubws::send(JsonOut().s("t", g.authVerified ? "hello" : "device_hello").s("id", g.deviceId).s("name", narrow(name)).s("platform", "windows")
+                    .s("public_key", identity::publicKey()).n("w", g.screenW / g.dpiScale).n("h", g.screenH / g.dpiScale).s("version", LZC_MESH_VERSION).str());
 }
 
 void startProbe() {
@@ -134,7 +173,7 @@ void onProbe(Probe *p) {
     g.loginUser = p->loginUser;
     g.cookie = p->cookie;
     bool ready = p->net.first == L_OK && p->login.first == L_OK && g.status[S_SERVICE].level == L_OK;
-    if (changed && g.hubConnected) {
+    if (changed && (g.hubConnected || hubws::busy())) {
         logLine(L"懒猫微服或登录会话变化，重新连接");
         hubws::close();
     }
@@ -142,7 +181,7 @@ void onProbe(Probe *p) {
         setStatus(S_HUB, L_WARN, L"正在连接 wss://lzc-mesh." + widen(g.boxDomain) + L"/api/ws");
         hubws::connect(L"lzc-mesh." + widen(g.boxDomain), widen(g.cookie));
     }
-    if (!ready && g.hubConnected) hubws::close();
+    if (!ready && (g.hubConnected || hubws::busy())) hubws::close();
     if (!ready) setStatus(S_HUB, L_UNKNOWN, L"等待懒猫设备接力应用可用");
     setOpenEnabled(!g.boxDomain.empty());
     mainwin::refresh();
@@ -150,26 +189,93 @@ void onProbe(Probe *p) {
     delete p;
 }
 
+void onInputMessage(const Json &o) {
+    const auto t = o["t"].str();
+    const double x = o["x"].num(0.5), y = o["y"].num(0.5);
+    if (t == "direct_active") {
+        g.activeSource = o["source"].str(); g.activeTarget = o["target"].str();
+        updateControlStatus();
+    } else if (t == "release") {
+        const bool was = g.captured;
+        g.captured = false; input::capture(false);
+        if (o["warp"].boolean()) input::warp(x, y);
+        if (was) logLine(L"控制已收回本机");
+        updateControlStatus();
+    } else if (t == "leave") {
+        const bool was = g.controlled;
+        g.controlled = false; input::leave();
+        if (was) logLine(L"远程控制结束");
+        updateControlStatus();
+    } else if (!g.operational() || !g.inputEnabled || !g.sharingEnabled) {
+        return;
+    } else if (t == "capture") {
+        g.captured = true; input::capture(true);
+        logLine(L"开始控制其他设备"); updateControlStatus();
+    } else if (t == "enter") {
+        g.controlled = true; input::enter(x, y);
+        logLine(fmt(L"被远程控制：光标进入本机 (%.2f, %.2f)", x, y)); updateControlStatus();
+    } else if (t == "move" && (g.controlled || g.activeTarget == g.deviceId)) {
+        input::move(x, y);
+        if (GetTickCount64() - lastMoveLog > 2000) {
+            lastMoveLog = GetTickCount64(); logLine(fmt(L"收到远程光标 (%.3f, %.3f)", x, y));
+        }
+    } else if (t == "button" && g.controlled) {
+        input::button((int)o["button"].num(1), o["down"].boolean());
+    } else if (t == "wheel" && g.controlled) {
+        input::wheel(o["dx"].num(), o["dy"].num());
+    } else if (t == "key" && g.controlled) {
+        input::key((uint32_t)o["code"].num(), o["down"].boolean());
+    }
+}
+
 void onHubText(const std::string &text) {
     Json o;
     if (!Json::parse(text, o) || !o.isObj()) return;
     std::string t = o["t"].str();
-    double x = o["x"].num(0.5), y = o["y"].num(0.5);
-    if (t == "welcome") {
+    if (t == "device_challenge") {
+        if (o["user"].str()!=g.hubUser) { hubws::close(); return; }
+        const auto proof=identity::proof(g.hubUser,o["nonce"].str());
+        if (!proof.empty()) hubws::send(JsonOut().s("t","device_proof").s("signature",proof).str());
+    } else if (t == "device_auth") {
+        const auto status=o["status"].str(),token=o["token"].str();
+        const bool valid=o["fingerprint"].str()==identity::fingerprint();
+        g.authVerified=valid && status=="approved" && token.size()==44 && token.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")==std::string::npos;
+        g.fileToken=g.authVerified?token:"";
+        const auto message=g.authVerified?L"已批准":status=="key_mismatch"?L"凭证不匹配，拒绝绑定":status=="revoked"?L"信任已撤销":L"等待管理页核对并批准";
+        setStatus(S_TRUST,g.authVerified?L_OK:L_WARN,std::wstring(message)+L" · 指纹 "+widen(identity::fingerprint()));
+        refreshClientActivity(); updateControlStatus(); updateClipboardStatus();
+        if (g.authVerified && !g.sharingEnabled) hubws::send(JsonOut().s("t","sharing").b("enabled",false).str());
+    } else if (t == "welcome") {
+        if (o["auth_version"].num()!=1) setStatus(S_TRUST,L_ERROR,L"需要支持设备凭证的新版中枢；共享保持停用");
         g.hubUser = o["user"].str();
         if (!o["id"].str().empty()) logLine(L"已加入 " + widen(g.hubUser) + L" 的设备组");
     } else if (t == "state") {
         g.devices.clear();
+        g.deviceReady = false;
+        g.deviceTrusted = false;
         int online = 0;
         for (auto &d : o["devices"].a) {
             MeshDevice m{d["id"].str(), d["name"].str(), d["platform"].str(), d["version"].str(), d["x"].num(), d["y"].num(), d["w"].num(), d["h"].num(), d["online"].boolean(),
-                         d["sharing"].boolean(true)};
+                         d["sharing"].boolean(true), d["enabled"].boolean(true)};
+            if (m.id == g.deviceId) { g.deviceReady = true; g.deviceEnabled = m.enabled; g.deviceControl = d["enabled"].type == Json::Bool; g.deviceTrusted = d["trusted"].boolean(false); }
             online += m.online;
             g.devices.push_back(m);
         }
         g.activeSource = o["active"]["source"].str();
         g.activeTarget = o["active"]["target"].str();
         g.swapCmdCtrl = o["settings"]["swap_cmd_ctrl"].boolean(true);
+        g.nativeProtocol = o["settings"]["transport_mode"].type == Json::Str;
+        g.transportMode = o["settings"]["transport_mode"].str("auto");
+        g.inputEnabled = o["settings"]["input_enabled"].boolean(true);
+        refreshClientActivity();
+        if (!g.inputEnabled) {
+            if (g.captured) input::capture(false);
+            if (g.controlled) input::leave();
+            g.captured = g.controlled = false;
+        }
+        if (!g.nativeProtocol) {
+            for (int key : {S_TRANSPORT, S_POINTER_CHANNEL, S_KEYBOARD_CHANNEL}) setStatus(key, L_OK, L"中枢转发 · 兼容旧版中枢");
+        }
         bool clip = o["settings"]["clipboard"].boolean(true);
         if (clip != g.clipboardEnabled) logLine(clip ? L"共享剪贴板已开启" : L"共享剪贴板已关闭");
         g.clipboardEnabled = clip;
@@ -179,57 +285,28 @@ void onHubText(const std::string &text) {
         devicesChanged();
     } else if (t == "edges") {
         input::setEdges(o["left"].boolean(), o["right"].boolean(), o["up"].boolean(), o["down"].boolean());
-    } else if (t == "capture") {
-        g.captured = true;
-        logLine(L"开始控制其他设备");
-        input::capture(true);
-        updateControlStatus();
-    } else if (t == "release") {
-        g.captured = false;
-        input::capture(false);
-        if (o["warp"].boolean()) input::warp(x, y);
-        logLine(L"控制已收回本机");
-        updateControlStatus();
-    } else if (t == "enter") {
-        g.controlled = true;
-        logLine(fmt(L"被远程控制：光标进入本机 (%.2f, %.2f)", x, y));
-        input::enter(x, y);
-        updateControlStatus();
-    } else if (t == "leave") {
-        g.controlled = false;
-        input::leave();
-        logLine(L"远程控制结束");
-        updateControlStatus();
-    } else if (t == "move") {
-        input::move(x, y);
-        if (GetTickCount64() - lastMoveLog > 2000) {
-            lastMoveLog = GetTickCount64();
-            logLine(fmt(L"收到远程光标 (%.3f, %.3f)", x, y));
-        }
-    } else if (t == "button") {
-        input::button((int)o["button"].num(1), o["down"].boolean());
-    } else if (t == "wheel") {
-        input::wheel(o["dx"].num(), o["dy"].num());
-    } else if (t == "key") {
-        uint32_t code = (uint32_t)o["code"].num();
-        bool down = o["down"].boolean();
-        logLine(fmt(L"收到按键 code=%u %ls", code, down ? L"按下" : L"抬起"));
-        input::key(code, down);
     } else if (t == "clipboard") {
         clipboard::set(o["text"].str(), o["from"].str());
     } else if (t == "files") {
         std::vector<SharedFile> list;
         for (auto &f : o["files"].a) list.push_back(SharedFile{f["name"].str(), f["uploader"].str(), (long long)f["size"].num(), f["modified"].num()});
-        files::update(list);
+        files::update(g.operational() ? list : std::vector<SharedFile>{});
     } else if (t == "error") {
         logLine(L"服务端错误：" + widen(o["message"].str()));
-    }
+    } else onInputMessage(o);
+    direct::hub(text);
 }
 
 void onHubClosed(int httpStatus, const std::wstring &why) {
     bool was = g.hubConnected;
     g.hubConnected = false;
+    g.nativeProtocol = false;
+    g.deviceReady = false;
+    g.authVerified = g.deviceTrusted = false; g.fileToken.clear();
+    refreshClientActivity();
+    direct::disconnect();
     input::setHubConnected(false);
+    for (int key : {S_TRANSPORT, S_POINTER_CHANNEL, S_KEYBOARD_CHANNEL}) setStatus(key, L_UNKNOWN, L"等待中枢认证");
     if (was) {
         logLine(L"与设备接力中枢的连接已断开：" + why);
         setStatus(S_HUB, L_WARN, L"连接已断开，稍后自动重连");
@@ -241,6 +318,7 @@ void onHubClosed(int httpStatus, const std::wstring &why) {
     if (g.captured) input::capture(false);
     if (g.controlled) input::leave();
     g.captured = g.controlled = false;
+    g.activeSource.clear(); g.activeTarget.clear();
     input::setEdges(false, false, false, false);
     updateControlStatus();
     updateClipboardStatus();
@@ -249,7 +327,7 @@ void onHubClosed(int httpStatus, const std::wstring &why) {
 // Windows blocks injected input into windows of elevated (admin) processes
 // unless we are elevated too (UIPI). Report it so it can be fixed with one click.
 void checkForegroundIntegrity() {
-    if (input::isElevated()) return;
+    if (!g.operational() || input::isElevated()) return;
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
@@ -336,11 +414,13 @@ void setSharing(bool on) {
     if (on == g.sharingEnabled) return;
     g.sharingEnabled = on;
     saveConfig();
-    input::setSharing(on);
+    input::setSharing(g.operational() && on && g.inputEnabled);
     // Give the cursor back at once if this PC is controlling another device.
-    if (!on && g.captured) hubws::send(JsonOut().s("t", "release").str());
+    if (!on && g.captured) direct::send(JsonOut().s("t", "release").str());
+    if (!on && g.controlled) { input::leave(); g.controlled = false; }
     hubws::send(JsonOut().s("t", "sharing").b("enabled", on).str());
     logLine(on ? L"键鼠共享已开启" : L"键鼠共享已暂停");
+    updateControlStatus();
     mainwin::refresh();
     tray::refresh();
 }
@@ -392,6 +472,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_SIZE: mainwin::layout(h); return 0;
+    case WM_VSCROLL: mainwin::scroll(LOWORD(w)); return 0;
+    case WM_MOUSEWHEEL: {
+        POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(h, &pt);
+        if (mainwin::wheel(pt, GET_WHEEL_DELTA_WPARAM(w))) return 0;
+        break;
+    }
     case WM_GETMINMAXINFO: {
         UINT d = GetDpiForWindow(h);
         ((MINMAXINFO *)l)->ptMinTrackSize = POINT{MulDiv(900, d, 96), MulDiv(640, d, 96)};
@@ -448,6 +534,14 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_AUTOSTART:
         case tray::ID_TRAY_AUTOSTART: setAutostart(!autostart::enabled()); break;
         case ID_SWAP: hubws::send(JsonOut().s("t", "settings").b("swap_cmd_ctrl", !g.swapCmdCtrl).str()); break;
+        case ID_TRANSPORT:
+            if (HIWORD(w) == CBN_SELCHANGE) hubws::send(JsonOut().s("t", "settings").s("transport_mode", mainwin::selectedTransport()).str());
+            break;
+        case ID_PAUSE_ALL: hubws::send(JsonOut().s("t", "settings").b("input_enabled", !g.inputEnabled).str()); break;
+        case ID_CLIENT:
+        case tray::ID_TRAY_CLIENT:
+            if (g.hubConnected && g.deviceControl) hubws::send(JsonOut().s("t", "device_enabled").s("id", g.deviceId).b("enabled", !g.deviceEnabled).str());
+            break;
         case tray::ID_TRAY_CLIPBOARD: hubws::send(JsonOut().s("t", "settings").b("clipboard", !g.clipboardEnabled).str()); break;
         case tray::ID_TRAY_SHOW: showWindow(h); break;
         case tray::ID_TRAY_QUIT: quit(h); break;
@@ -467,19 +561,21 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_APP_FILES_STATUS: {
         std::wstring *s = (std::wstring *)l;
-        files::setStatusText(*s);
-        logLine(*s);
+        if (g.operational() && files::accepts((uint64_t)w)) { files::setStatusText(*s); logLine(*s); }
         delete s;
         return 0;
     }
     case WM_APP_FILES_REVEAL: {
         std::wstring *p = (std::wstring *)l;
-        ShellExecuteW(h, L"open", L"explorer.exe", (L"/select,\"" + *p + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+        if (g.operational() && files::accepts((uint64_t)w)) ShellExecuteW(h, L"open", L"explorer.exe", (L"/select,\"" + *p + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
         delete p;
         return 0;
     }
     case WM_APP_HUB_OPEN:
+        if (!hubws::isCurrent(static_cast<unsigned>(w))) return 0;
         g.hubConnected = true;
+        g.deviceReady = g.deviceTrusted = g.authVerified = false; g.fileToken.clear();
+        refreshClientActivity();
         input::setHubConnected(true);
         setStatus(S_HUB, L_OK, L"已连接");
         logLine(L"已连接设备接力中枢");
@@ -488,24 +584,36 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_APP_HUB_TEXT: {
         std::string *s = (std::string *)l;
-        onHubText(*s);
+        if (hubws::isCurrent(static_cast<unsigned>(w))) onHubText(*s);
         delete s;
         return 0;
     }
     case WM_APP_HUB_CLOSED: {
-        std::wstring *s = (std::wstring *)l;
-        onHubClosed((int)w, *s);
+        auto *s = reinterpret_cast<hubws::Closed *>(l);
+        if (hubws::isCurrent(s->generation, true)) { onHubClosed(s->status, s->reason); tray::refresh(); }
         delete s;
-        tray::refresh();
+        return 0;
+    }
+    case WM_APP_NET_LOG: {
+        auto *s = reinterpret_cast<std::wstring *>(l);
+        if (hubws::isCurrent(static_cast<unsigned>(w))) logLine(*s);
+        delete s;
         return 0;
     }
     case WM_APP_EDGE: {
         static const char *dirs[] = {"left", "right", "up", "down"};
-        if (g.hubConnected && g.sharingEnabled && !g.captured && !g.controlled) hubws::send(JsonOut().s("t", "edge").s("dir", dirs[w & 3]).n("pos", l / 10000.0).str());
+        if (g.operational() && g.sharingEnabled && g.inputEnabled && !g.captured && !g.controlled) direct::send(JsonOut().s("t", "edge").s("dir", dirs[w & 3]).n("pos", l / 10000.0).str());
         return 0;
     }
+    case WM_APP_DIRECT: direct::drain(); return 0;
     case WM_APP_INPUT:
-        if (w == 1) setStatus(S_INPUT, L_OK, input::isElevated() ? L"输入钩子与 SendInput 就绪（管理员权限）" : L"输入钩子与 SendInput 就绪（普通权限；管理员窗口需提权）");
+        if (!g.operational()) return 0;
+        if (w == 3) {
+            logLine(L"输入队列超限，已安全收回控制");
+            g.captured = false; input::capture(false); updateControlStatus();
+            direct::send(JsonOut().s("t", "release").str());
+        }
+        else if (w == 1) setStatus(S_INPUT, L_OK, input::isElevated() ? L"输入钩子与 SendInput 就绪（管理员权限）" : L"输入钩子与 SendInput 就绪（普通权限；管理员窗口需提权）");
         else if (w == 0) setStatus(S_INPUT, L_ERROR, fmt(L"无法安装全局输入钩子（%lu），请以管理员身份运行或检查安全软件拦截", GetLastError()));
         else if (w == 2) {
             setStatus(S_INPUT, L_ERROR, fmt(L"系统拒绝注入输入（%lu）：可能处于锁屏/UAC 安全桌面，或前台是管理员窗口。点击“以管理员身份运行”", (DWORD)l));
@@ -514,6 +622,9 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (input::isElevated()) showElevate(false);
         return 0;
     case WM_DESTROY:
+        g.hubConnected = false; g.deviceReady = false;
+        refreshClientActivity();
+        direct::shutdown();
         tray::remove();
         hubws::close();
         PostQuitMessage(0);
@@ -549,8 +660,9 @@ std::wstring fmt(const wchar_t *f, ...) {
     return buf;
 }
 const char *statusName(int key) {
-    static const char *n[] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard"};
-    return n[key];
+    static const char *n[] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard", "transport", "pointer-channel", "keyboard-channel", "device-trust"};
+    static_assert(sizeof(n)/sizeof(*n)==S_COUNT,"Every status needs a stable diagnostic key");
+    return key>=0 && key<S_COUNT?n[key]:"unknown";
 }
 
 static HANDLE logFile = INVALID_HANDLE_VALUE;
@@ -601,9 +713,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\LzcMeshClient");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Hand over to an elevated relaunch: wait briefly for the old instance to quit.
-        if (WaitForSingleObject(single, 3000) != WAIT_OBJECT_0 && WaitForSingleObject(single, 0) != WAIT_ABANDONED) {
+        const DWORD waited = WaitForSingleObject(single, 3000);
+        if (waited != WAIT_OBJECT_0 && waited != WAIT_ABANDONED) {
             // Second launch (e.g. Start menu while running in the tray): show the existing window.
             if (HWND other = FindWindowW(L"LzcMeshMain", nullptr)) { ShowWindow(other, IsIconic(other) ? SW_RESTORE : SW_SHOW); SetForegroundWindow(other); }
+            if (single) CloseHandle(single);
             return 0;
         }
     }
@@ -629,10 +743,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     int ww = std::min(MulDiv(1240, sysDpi, 96), (int)(work.right - work.left) - MulDiv(40, sysDpi, 96));
     int wh = std::min(MulDiv(880, sysDpi, 96), (int)(work.bottom - work.top) - MulDiv(40, sysDpi, 96));
-    HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh, nullptr, nullptr, inst, nullptr);
+    HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW | WS_VSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh, nullptr, nullptr, inst, nullptr);
     logLine(L"懒猫设备接力 Windows " LZC_MESH_VERSION L" 启动，设备 ID " + widen(g.deviceId) + (input::isElevated() ? L"（管理员）" : L""));
-    input::start();
-    input::setSharing(g.sharingEnabled);
+    input::setSharing(false);
     updateScreenStatus();
     // Started at login: stay in the tray without opening the window.
     if (!background) ShowWindow(h, show);
@@ -645,6 +758,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         }
     }
     input::stop();
-    if (single) ReleaseMutex(single);
+    identity::shutdown();
+    // Close the writer before another instance acquires the mutex on restart.
+    if (logFile != INVALID_HANDLE_VALUE) { CloseHandle(logFile); logFile = INVALID_HANDLE_VALUE; }
+    if (single) { ReleaseMutex(single); CloseHandle(single); }
     return 0;
 }

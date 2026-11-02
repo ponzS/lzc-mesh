@@ -48,6 +48,7 @@ struct Router {
     devices: Vec<Device>,
     mode: String,
     enabled: bool,
+    dormant: bool,
     connected: bool,
     registered: bool,
     swap: bool,
@@ -100,6 +101,7 @@ pub async fn run(
         devices: vec![],
         mode: "auto".into(),
         enabled: true,
+        dormant: false,
         connected: false,
         registered: false,
         swap: true,
@@ -252,6 +254,7 @@ impl Router {
                     let endpoint = i.endpoint.clone();
                     let tx = self.tx.clone();
                     tokio::spawn(async move {
+                        let handshakes=std::sync::Arc::new(tokio::sync::Semaphore::new(16));
                         while let Some(incoming) = endpoint.accept().await {
                             let allowed = match incoming.remote_address().ip() {
                                 std::net::IpAddr::V4(ip) => {
@@ -263,8 +266,10 @@ impl Router {
                                 incoming.refuse();
                                 continue;
                             }
+                            let Ok(permit)=handshakes.clone().try_acquire_owned() else {incoming.refuse();continue;};
                             let tx = tx.clone();
                             tokio::spawn(async move {
+                                let _permit=permit;
                                 if let Ok(Ok(conn)) =
                                     tokio::time::timeout(Duration::from_secs(2), incoming).await
                                 {
@@ -324,7 +329,8 @@ impl Router {
                 self.legacy = self.grant.is_none()
                     && (v["active"]["source"] == self.id || v["active"]["target"] == self.id);
                 self.swap = v["settings"]["swap_cmd_ctrl"].as_bool().unwrap_or(true);
-                let enabled = v["settings"]["input_enabled"].as_bool().unwrap_or(true);
+                self.dormant = self.devices.iter().find(|d| d.id == self.id).is_none_or(|d| !d.enabled || !d.trusted);
+                let enabled = !self.dormant && v["settings"]["input_enabled"].as_bool().unwrap_or(true);
                 if !enabled && self.enabled {
                     self.finish(false, false);
                     self.inject(json!({"t":"release","x":0.5,"y":0.5,"warp":false}));
@@ -483,12 +489,9 @@ impl Router {
     fn dial(&self) {
         if self.mode == "bluetooth" {
             if let Some(bt) = &self.bluetooth {
-                if bt.local.as_ref().is_some_and(|v| v["role"] == "connector") {
+                if let Some(local) = &bt.local {
                     for p in self.peers.values() {
-                        if p.bluetooth
-                            .as_ref()
-                            .is_some_and(|v| v["role"] == "listener")
-                            && !bt.connected(&p.id)
+                        if bluetooth_can_dial(&self.id, local, p) && !bt.connected(&p.id)
                         {
                             self.cb.emit(
                                 json!({"_lan":"bt_connect","peer":p.id,"bluetooth":p.bluetooth}),
@@ -1206,6 +1209,8 @@ impl Router {
             });
             let status = if !self.connected {
                 "等待中枢认证".into()
+            } else if self.dormant {
+                "客户端已关闭 · 仅保留远程唤醒连接".into()
             } else if !self.enabled {
                 "全部设备接力已暂停 · 直连监听已关闭".into()
             } else if let Some(peer) = active {
@@ -1327,6 +1332,17 @@ impl Router {
             }
         }
     }
+}
+
+// A Windows listener can also connect to the existing Mac listener. Legacy
+// connector/listener adverts keep working; two dual-role peers dial once.
+pub(crate) fn bluetooth_can_dial(id: &str, local: &Value, peer: &Peer) -> bool {
+    let connector = local["role"] == "connector"
+        || (local["role"] == "listener" && local["connector"].as_bool() == Some(true));
+    connector && peer.bluetooth.as_ref().is_some_and(|remote| {
+        remote["role"] == "listener"
+            && (remote["connector"].as_bool() != Some(true) || local["role"] == "connector" || id < peer.id.as_str())
+    })
 }
 
 fn valid_event(event: &Value) -> bool {

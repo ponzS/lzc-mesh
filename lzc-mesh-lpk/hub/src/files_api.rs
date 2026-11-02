@@ -22,6 +22,34 @@ fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(serde_json::json!({ "error": msg }))).into_response()
 }
 
+type Lease = Option<tokio::sync::watch::Receiver<bool>>;
+
+async fn device_lease(app: &App, user: &str, headers: &HeaderMap) -> Result<Lease, Response> {
+    if !crate::same_origin(headers) { return Err(err(StatusCode::FORBIDDEN, "origin rejected")) }
+    // A management browser has account authority. A native request additionally
+    // proves its current approved connection; a display name or ID is not proof.
+    let native = ["x-lzc-mesh-device-id","x-lzc-mesh-device-token","x-lzc-mesh-device"].iter().any(|k|headers.contains_key(*k));
+    if !native { return Ok(None) }
+    let id = headers.get("x-lzc-mesh-device-id").and_then(|v|v.to_str().ok());
+    let token = headers.get("x-lzc-mesh-device-token").and_then(|v|v.to_str().ok());
+    let (Some(id),Some(token)) = (id,token) else { return Err(err(StatusCode::FORBIDDEN,"device proof required")) };
+    let room = app.hub.room(user).await;
+    let Some(watch) = room.lock().await.file_lease(id,token) else { return Err(err(StatusCode::FORBIDDEN, "device permission rejected")) };
+    if !*watch.borrow() { return Err(err(StatusCode::FORBIDDEN, "device dormant")) }
+    Ok(Some(watch))
+}
+
+fn revoked_now(lease: &Lease) -> bool {
+    lease.as_ref().is_some_and(|r| !*r.borrow() || r.has_changed().unwrap_or(true))
+}
+
+async fn revoked(lease: &mut Lease) {
+    if let Some(r) = lease {
+        if !*r.borrow() { return; }
+        let _ = r.changed().await; // Any lifecycle change invalidates this transfer, even off -> on.
+    } else { std::future::pending::<()>().await }
+}
+
 async fn notify(app: &App, user: &str) {
     let files = app.files.list(user);
     app.hub.room(user).await.lock().await.files_changed(files);
@@ -29,11 +57,13 @@ async fn notify(app: &App, user: &str) {
 
 pub async fn list(State(app): State<App>, headers: HeaderMap) -> Response {
     let Some(user) = user_of(&headers) else { return err(StatusCode::UNAUTHORIZED, "login required") };
+    if let Err(response) = device_lease(&app, &user, &headers).await { return response; }
     Json(serde_json::json!({ "files": app.files.list(&user), "max_bytes": MAX_FILE_BYTES })).into_response()
 }
 
 pub async fn upload(State(app): State<App>, headers: HeaderMap, Path(raw): Path<String>, body: Body) -> Response {
     let Some(user) = user_of(&headers) else { return err(StatusCode::UNAUTHORIZED, "login required") };
+    let mut lease = match device_lease(&app, &user, &headers).await { Ok(v) => v, Err(r) => return r };
     let Some(name) = safe_name(&raw) else { return err(StatusCode::BAD_REQUEST, "invalid file name") };
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > MAX_FILE_BYTES) {
@@ -55,7 +85,16 @@ pub async fn upload(State(app): State<App>, headers: HeaderMap, Path(raw): Path<
     };
     let mut written: u64 = 0;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            _ = revoked(&mut lease) => {
+                drop(file); let _ = tokio::fs::remove_file(&tmp).await;
+                return err(StatusCode::FORBIDDEN, "device dormant; transfer cancelled");
+            }
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else { break };
         let ok = match chunk {
             Ok(bytes) => {
                 written += bytes.len() as u64;
@@ -74,6 +113,10 @@ pub async fn upload(State(app): State<App>, headers: HeaderMap, Path(raw): Path<
         return err(StatusCode::INTERNAL_SERVER_ERROR, "write failed");
     }
     drop(file);
+    if revoked_now(&lease) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return err(StatusCode::FORBIDDEN, "device lifecycle changed");
+    }
     let final_name = app.files.unique_name(&user, &name);
     if tokio::fs::rename(&tmp, dir.join(&final_name)).await.is_err() {
         let _ = tokio::fs::remove_file(&tmp).await;
@@ -93,10 +136,15 @@ pub async fn upload(State(app): State<App>, headers: HeaderMap, Path(raw): Path<
 
 pub async fn download(State(app): State<App>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     let Some(user) = user_of(&headers) else { return err(StatusCode::UNAUTHORIZED, "login required") };
+    let lease = match device_lease(&app, &user, &headers).await { Ok(v) => v, Err(r) => return r };
     let Some(path) = app.files.path(&user, &name) else { return err(StatusCode::BAD_REQUEST, "invalid file name") };
     let Ok(file) = tokio::fs::File::open(&path).await else { return err(StatusCode::NOT_FOUND, "not found") };
     let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-    let mut res = Body::from_stream(ReaderStream::with_capacity(file, 256 * 1024)).into_response();
+    let stream = futures_util::stream::unfold((ReaderStream::with_capacity(file, 256 * 1024), lease), |(mut reader, mut lease)| async move {
+        let item = tokio::select! { biased; _ = revoked(&mut lease) => None, item = reader.next() => item };
+        item.map(|item| (item, (reader, lease)))
+    });
+    let mut res = Body::from_stream(stream).into_response();
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
@@ -113,6 +161,7 @@ pub async fn download(State(app): State<App>, headers: HeaderMap, Path(name): Pa
 
 pub async fn remove(State(app): State<App>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     let Some(user) = user_of(&headers) else { return err(StatusCode::UNAUTHORIZED, "login required") };
+    if let Err(response) = device_lease(&app, &user, &headers).await { return response; }
     if !app.files.remove(&user, &name) {
         return err(StatusCode::NOT_FOUND, "not found");
     }

@@ -41,7 +41,23 @@ h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
 .devices li:first-child { border-top:0; }
 .devices .meta { color:var(--muted); font-size:12px; }
 .devices button { border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:6px; padding:2px 8px; cursor:pointer; font-size:12px; }
-.devices button:hover { color:var(--text); border-color:var(--muted); }
+@media (hover: hover) and (pointer: fine) { .devices button:hover { color:var(--text); border-color:var(--muted); } }
+.device-info { min-width:0; flex:1; overflow-wrap:anywhere; }
+.device-fingerprint { display:block; margin-top:6px; font:10px/1.5 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; }
+.devices .device-trust { min-height:36px; touch-action:manipulation; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
+.device-trust:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+.device-trust:disabled { opacity:.5; cursor:default; }
+@media (pointer: coarse) { .devices .device-trust { min-height:44px; } }
+.device-actions { flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; }
+.devices .device-switch { position:relative; width:44px; height:44px; padding:0; flex:none; border:0; border-radius:8px; background:transparent; cursor:pointer; touch-action:manipulation; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
+.device-switch::before { content:""; position:absolute; left:0; top:9px; width:44px; height:26px; border-radius:99px; background:var(--line); }
+.device-switch::after { content:""; position:absolute; left:4px; top:13px; width:18px; height:18px; border-radius:50%; background:var(--panel); box-shadow:0 1px 2px #0002; }
+.device-switch[aria-checked="true"]::before { background:var(--text); }
+.device-switch[aria-checked="true"]::after { left:22px; }
+.device-switch:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+.device-switch:active { opacity:.7; }
+.device-switch:disabled { cursor:default; opacity:.5; }
+.screen.dormant { opacity:.5; border-style:dashed; }
 .row { display:flex; gap:8px; align-items:flex-start; cursor:pointer; }
 .downloads { list-style:none; margin:0; padding:0; }
 .downloads li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; padding:6px 0; border-top:1px solid var(--line); }

@@ -4,8 +4,10 @@
 #include <winhttp.h>
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <thread>
+#include "outbox.h"
 
 #include "app.h"
 
@@ -99,95 +101,131 @@ HttpResult httpGet(const std::wstring &url, const std::wstring &headers) {
 
 namespace hubws {
 namespace {
-std::mutex mu;
-HINTERNET session, connection, request, socket;
-std::atomic<bool> connecting{false};
-std::atomic<unsigned> generation{0};
-
-void closeHandles() {
-    std::lock_guard<std::mutex> l(mu);
-    for (HINTERNET *h : {&socket, &request, &connection, &session}) {
-        if (*h) WinHttpCloseHandle(*h);
-        *h = nullptr;
+struct Connection {
+    explicit Connection(unsigned value) : generation(value) {}
+    const unsigned generation;
+    HINTERNET session=nullptr, connection=nullptr, request=nullptr, socket=nullptr;
+    std::mutex handles, writes;
+    HubOutbox outbox;
+    std::atomic<bool> stopping{false}, opened{false}, finished{false}, notified{false}, closing{false};
+    ~Connection() {
+        // Reader, writer and closer retain this object until all calls finish.
+        for (auto h : {socket, request, connection, session}) if (h) WinHttpCloseHandle(h);
     }
-}
+};
+std::mutex currentMutex;
+std::shared_ptr<Connection> current;
+unsigned nextGeneration=0;
+std::shared_ptr<Connection> getCurrent() { std::lock_guard<std::mutex> lock(currentMutex); return current; }
 
 void post(UINT msg, WPARAM w, LPARAM l) {
-    if (!PostMessageW(g.hwnd, msg, w, l)) {
-        if (msg == WM_APP_HUB_TEXT) delete (std::string *)l;
-        if (msg == WM_APP_HUB_CLOSED) delete (std::wstring *)l;
+    if (!PostMessageW(g.hwnd,msg,w,l)) {
+        if (msg==WM_APP_HUB_TEXT) delete reinterpret_cast<std::string *>(l);
+        if (msg==WM_APP_HUB_CLOSED) delete reinterpret_cast<Closed *>(l);
+        if (msg==WM_APP_NET_LOG) delete reinterpret_cast<std::wstring *>(l);
     }
 }
-
-void run(std::wstring host, std::wstring cookie, unsigned gen) {
-    int httpStatus = 0;
-    std::wstring why;
-    HINTERNET s = openSession(), c = nullptr, q = nullptr, w = nullptr;
-    if (s) c = WinHttpConnect(s, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (c) q = WinHttpOpenRequest(c, L"GET", L"/api/ws", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+void stop(const std::shared_ptr<Connection> &c, int status, const std::wstring &why) {
+    c->stopping=true; c->outbox.stop();
+    if (!c->notified.exchange(true)) post(WM_APP_HUB_CLOSED,0,reinterpret_cast<LPARAM>(new Closed{c->generation,status,why}));
+    if (c->closing.exchange(true)) return;
+    // The protocol close may wait for the peer or an in-progress send. Neither
+    // the UI nor an input callback ever waits on this mutex or this operation.
+    std::thread([c] {
+        std::lock_guard<std::mutex> write(c->writes);
+        HINTERNET socket;
+        { std::lock_guard<std::mutex> lock(c->handles); socket=c->socket; }
+        if (socket) WinHttpWebSocketClose(socket,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,nullptr,0);
+    }).detach();
+}
+void writer(const std::shared_ptr<Connection> &c) {
+    HubOutbox::Frame frame;
+    ULONGLONG lastReport=0;
+    while (c->outbox.take(frame)) {
+        if (c->stopping) break;
+        const auto begin=std::chrono::steady_clock::now();
+        DWORD result;
+        {
+            std::lock_guard<std::mutex> write(c->writes);
+            if (c->stopping) break;
+            result=WinHttpWebSocketSend(c->socket,WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                const_cast<char *>(frame.text.data()),static_cast<DWORD>(frame.text.size()));
+        }
+        const auto now=std::chrono::steady_clock::now();
+        const auto queued=std::chrono::duration_cast<std::chrono::milliseconds>(begin-frame.queued).count();
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(now-begin).count();
+        if ((queued>=50 || elapsed>=50) && GetTickCount64()-lastReport>=4000) {
+            lastReport=GetTickCount64();
+            post(WM_APP_NET_LOG,c->generation,reinterpret_cast<LPARAM>(new std::wstring(
+                fmt(L"hub_send_metrics queue_ms=%lld write_ms=%lld",static_cast<long long>(queued),static_cast<long long>(elapsed)))));
+        }
+        if (result!=NO_ERROR) { stop(c,0,fmt(L"发送失败（%lu）",result)); break; }
+    }
+}
+void run(const std::shared_ptr<Connection> &c, std::wstring host, std::wstring cookie) {
+    int status=0; std::wstring why=L"连接已关闭";
+    c->session=openSession();
+    if (c->session && !c->stopping) c->connection=WinHttpConnect(c->session,host.c_str(),INTERNET_DEFAULT_HTTPS_PORT,0);
+    if (c->connection && !c->stopping) c->request=WinHttpOpenRequest(c->connection,L"GET",L"/api/ws",nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE);
+    auto q=c->request;
     if (q) {
-        DWORD noRedirect = WINHTTP_DISABLE_REDIRECTS;
-        WinHttpSetOption(q, WINHTTP_OPTION_DISABLE_FEATURE, &noRedirect, sizeof noRedirect);
-        WinHttpSetOption(q, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0);
+        DWORD disabled=WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(q,WINHTTP_OPTION_DISABLE_FEATURE,&disabled,sizeof disabled);
+        WinHttpSetOption(q,WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,nullptr,0);
     }
-    std::wstring headers = L"Cookie: Lzc-Auth-Token=" + cookie + L"\r\n";
-    if (!q || !WinHttpSendRequest(q, headers.c_str(), (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !WinHttpReceiveResponse(q, nullptr)) {
-        why = lastError(L"连接");
-    } else {
-        DWORD code = 0, len = sizeof code;
-        WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &code, &len, nullptr);
-        httpStatus = (int)code;
-        if (code == 101) w = WinHttpWebSocketCompleteUpgrade(q, 0);
-        if (!w) why = code == 101 ? lastError(L"WebSocket 升级") : fmt(L"服务端返回 HTTP %lu", code);
-    }
-    {
-        std::lock_guard<std::mutex> l(mu);
-        session = s; connection = c; request = q; socket = w;
-    }
-    connecting = false;
-    if (w && gen == generation) {
-        DWORD ka = 15000;
-        WinHttpSetOption(w, WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL, &ka, sizeof ka);
-        post(WM_APP_HUB_OPEN, 0, 0);
-        std::string msg;
-        std::vector<char> buf(64 * 1024);
-        while (true) {
-            DWORD read = 0;
-            WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
-            DWORD err = WinHttpWebSocketReceive(w, buf.data(), (DWORD)buf.size(), &read, &type);
-            if (err != NO_ERROR) { why = fmt(L"读取失败（%lu）", err); break; }
-            if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) { why = L"服务端关闭连接"; break; }
-            msg.append(buf.data(), read);
-            if (type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE || type == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) continue;
-            if (type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) post(WM_APP_HUB_TEXT, 0, (LPARAM) new std::string(std::move(msg)));
-            msg.clear();
+    const auto headers=L"Cookie: Lzc-Auth-Token="+cookie+L"\r\n";
+    HINTERNET socket=nullptr;
+    if (!c->stopping && q && WinHttpSendRequest(q,headers.c_str(),static_cast<DWORD>(-1L),WINHTTP_NO_REQUEST_DATA,0,0,0) && !c->stopping && WinHttpReceiveResponse(q,nullptr)) {
+        DWORD code=0,len=sizeof code;
+        WinHttpQueryHeaders(q,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,nullptr,&code,&len,nullptr);
+        status=static_cast<int>(code);
+        if (code==101 && !c->stopping) socket=WinHttpWebSocketCompleteUpgrade(q,0);
+        if (!socket) why=code==101?lastError(L"WebSocket 升级"):fmt(L"服务端返回 HTTP %lu",code);
+    } else if (!c->stopping) why=lastError(L"连接");
+    { std::lock_guard<std::mutex> lock(c->handles); c->socket=socket; }
+    if (socket && !c->stopping) {
+        DWORD keepalive=15000;
+        WinHttpSetOption(socket,WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL,&keepalive,sizeof keepalive);
+        c->opened=true;
+        std::thread(writer,c).detach();
+        post(WM_APP_HUB_OPEN,c->generation,0);
+        std::string message; std::vector<char> bytes(64*1024);
+        while (!c->stopping) {
+            DWORD read=0; WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
+            const DWORD error=WinHttpWebSocketReceive(socket,bytes.data(),static_cast<DWORD>(bytes.size()),&read,&type);
+            if (error!=NO_ERROR) { why=fmt(L"读取失败（%lu）",error); break; }
+            if (type==WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) { why=L"服务端关闭连接"; break; }
+            message.append(bytes.data(),read);
+            if (message.size()>(1u<<20)) { why=L"中枢消息超限"; break; }
+            if (type==WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE || type==WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) continue;
+            if (type==WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE && !c->stopping)
+                post(WM_APP_HUB_TEXT,c->generation,reinterpret_cast<LPARAM>(new std::string(std::move(message))));
+            message.clear();
         }
     }
-    if (gen == generation) {
-        closeHandles();
-        post(WM_APP_HUB_CLOSED, (WPARAM)httpStatus, (LPARAM) new std::wstring(why));
+    stop(c,status,why); c->finished=true;
+}
+} // namespace
+
+bool busy() { auto c=getCurrent(); return c && !c->finished && (!c->opened || c->stopping); }
+bool isCurrent(unsigned generation, bool allowStopped) {
+    auto c=getCurrent(); return c && c->generation==generation && (allowStopped || !c->stopping);
+}
+void connect(const std::wstring &host,const std::wstring &cookie) {
+    std::shared_ptr<Connection> c, retired;
+    {
+        std::lock_guard<std::mutex> lock(currentMutex);
+        if (current && !current->finished) return;
+        retired=std::move(current);
+        current=c=std::make_shared<Connection>(++nextGeneration);
     }
+    if (retired) std::thread([old=std::move(retired)]() mutable { old.reset(); }).detach();
+    std::thread(run,c,host,cookie).detach();
 }
-}  // namespace
-
-bool busy() { return connecting; }
-
-void connect(const std::wstring &host, const std::wstring &cookie) {
-    if (connecting) return;
-    connecting = true;
-    unsigned gen = ++generation;
-    std::thread(run, host, cookie, gen).detach();
-}
-
-void close() {
-    std::lock_guard<std::mutex> l(mu);
-    if (socket) WinHttpWebSocketClose(socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
-    // Closing the request aborts a pending receive; the reader posts WM_APP_HUB_CLOSED.
-    if (request) WinHttpCloseHandle(request), request = nullptr;
-}
-
+void close() { if (auto c=getCurrent()) stop(c,0,L"客户端关闭管理连接"); }
 void send(const std::string &text) {
-    std::lock_guard<std::mutex> l(mu);
-    if (socket) WinHttpWebSocketSend(socket, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, (PVOID)text.data(), (DWORD)text.size());
+    auto c=getCurrent();
+    if (!c || !c->opened || c->stopping) return;
+    if (!c->outbox.push(text) && !c->stopping) stop(c,0,L"中枢发送队列超限，连接已安全停止");
 }
-}  // namespace hubws
+} // namespace hubws

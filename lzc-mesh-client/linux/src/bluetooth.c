@@ -106,6 +106,11 @@ static void write_worker(GTask *task,gpointer object,gpointer task_data,GCancell
     else notify("bt_closed",w->connection->id,NULL,NULL,"蓝牙发送失败");
     release(w->connection);g_free(w->bytes);g_free(w);g_task_return_boolean(task,TRUE);
 }
+void bluetooth_stop(void) {
+    JsonObject *object = json_object_new();
+    json_object_set_string_member(object, "_lan", "bt_stop");
+    bluetooth_event(object); json_object_unref(object);
+}
 void bluetooth_event(JsonObject *o){
     const char *kind=json_object_get_string_member_with_default(o,"_lan","");
     if(!connections){connections=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,release);dialing=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);}

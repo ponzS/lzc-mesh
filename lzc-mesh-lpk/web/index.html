@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>懒猫设备接力</title>
-<link rel="stylesheet" href="style.css?v=0.2.2-channels">
+<link rel="stylesheet" href="style.css?v=0.2.1-device-trust">
 </head>
 <body>
 <header>
@@ -38,6 +38,8 @@
     <div class="panel">
       <h2>设备</h2>
       <ul id="devices" class="devices"></ul>
+      <p class="note">首次接入（包括升级后的已有设备）需先核对本机显示的完整设备指纹并批准。撤销信任与运行开关独立；未获信任的设备不能参与共享。请保护管理网页登录会话，它拥有批准设备和管理文件的权限。</p>
+      <p class="note">关闭某台客户端会停止它的键鼠、剪贴板、文件收发及直连，状态跨重启保留。后台仍在运行且网络可达时，可通过开关重新开启；不能唤醒已关机或真正退出的进程。</p>
     </div>
     <div class="panel">
       <h2>设置</h2>
@@ -49,7 +51,7 @@
         <option value="relay">仅中枢转发</option>
       </select>
       <p id="transport-note" class="note sub" role="status">局域网可达时自动直连，不可达时通过中枢转发。</p>
-      <button id="pause-all" class="pause-all" type="button" disabled>暂停全部设备接力</button>
+      <button id="pause-all" class="pause-all" type="button" disabled>暂停全部键鼠接力</button>
       <p id="input-note" class="note sub" role="status">暂停会结束当前控制、释放按键，并关闭全部新版客户端的直连入口。</p>
 
       <label class="row"><input type="checkbox" id="clipboard"> 共享剪贴板（文本）</label>
@@ -60,14 +62,14 @@
     <div class="panel">
       <h2>客户端下载</h2>
       <ul class="downloads">
-        <li><span class="platform">macOS（Apple Silicon / Intel）</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-macos.dmg" target="_blank" rel="noopener">安装包 .dmg</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-macos.zip" target="_blank" rel="noopener">压缩包 .zip</a></li>
-        <li><span class="platform">Windows 10/11 x64</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-windows-setup.exe" target="_blank" rel="noopener">安装包 .exe</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-windows.zip" target="_blank" rel="noopener">压缩包 .zip</a></li>
-        <li><span class="platform">Linux x86_64（wlroots / Hyprland）</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-linux-x86_64.pkg.tar.zst" target="_blank" rel="noopener">安装包 Arch</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.1.2/lzc-mesh-linux-x86_64.tar.gz" target="_blank" rel="noopener">压缩包 .tar.gz</a></li>
+        <li><span class="platform">macOS（Apple Silicon / Intel）</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-macos.dmg" target="_blank" rel="noopener">安装包 .dmg</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-macos.zip" target="_blank" rel="noopener">压缩包 .zip</a></li>
+        <li><span class="platform">Windows 10/11 x64</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-windows-setup.exe" target="_blank" rel="noopener">安装包 .exe</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-windows.zip" target="_blank" rel="noopener">压缩包 .zip</a></li>
+        <li><span class="platform">Linux x86_64（仅 Omarchy）</span><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-linux-x86_64.pkg.tar.zst" target="_blank" rel="noopener">安装包 Arch</a><a href="https://github.com/ponzS/lzc-mesh/releases/download/v0.2.1/lzc-mesh-linux-x86_64.tar.gz" target="_blank" rel="noopener">压缩包 .tar.gz</a></li>
       </ul>
-      <p class="note">安装包托管在 <a href="https://github.com/ponzS/lzc-mesh/releases/tag/v0.1.2" target="_blank" rel="noopener">GitHub Releases</a>。客户端通过本机的懒猫微服客户端接入网络，使用前请先登录懒猫微服客户端。</p>
+      <p class="note">安装包托管在 <a href="https://github.com/ponzS/lzc-mesh/releases/tag/v0.2.1" target="_blank" rel="noopener">GitHub Releases</a>。客户端通过本机的懒猫微服客户端接入网络，使用前请先登录懒猫微服客户端。Linux 客户端仅支持 Omarchy，不支持其他发行版或桌面环境。</p>
     </div>
   </section>
 </main>
-<script src="app.js?v=0.2.2-channels"></script>
+<script src="app.js?v=0.2.1-device-trust"></script>
 </body>
 </html>

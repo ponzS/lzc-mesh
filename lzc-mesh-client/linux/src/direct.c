@@ -13,8 +13,9 @@ static MeshDirect *transport;
 static GMutex transport_lock;
 static GMutex queue_lock;
 static GQueue queue=G_QUEUE_INIT;
-static bool scheduled;
-typedef struct { char *text; char *key; } Event;
+static bool scheduled, accepting;
+static uint64_t generation, next_generation;
+typedef struct { char *text; char *key; uint64_t generation; } Event;
 
 static char *motion_key(JsonObject *o) {
     const char *kind=json_object_get_string_member_with_default(o,"_lan","");
@@ -41,12 +42,16 @@ static gboolean drain(gpointer unused) {
         g_mutex_lock(&queue_lock);
         Event *e=g_queue_pop_head(&queue);
         if (!e){scheduled=false;g_mutex_unlock(&queue_lock);return G_SOURCE_REMOVE;}
+        bool valid=accepting && e->generation==generation;
         g_mutex_unlock(&queue_lock);
+        if(!valid){event_free(e);continue;}
         JsonParser *p=json_parser_new();
         if (json_parser_load_from_data(p,e->text,-1,NULL)) {
             JsonObject *o=json_node_get_object(json_parser_get_root(p));
             const char *kind=json_object_get_string_member_with_default(o,"_lan","");
-            if (g_str_has_prefix(kind,"bt_")) bluetooth_event(o);
+            if (g_str_has_prefix(kind,"bt_")) {
+                if (app_operational() || !strcmp(kind,"bt_stop") || !strcmp(kind,"bt_close")) bluetooth_event(o);
+            }
             else if (!strcmp(kind,"metrics")) app_log("%s",json_object_get_string_member_with_default(o,"text",""));
             else if (!strcmp(kind,"channel_status")) {
                 const char *channel=json_object_get_string_member_with_default(o,"channel","");
@@ -67,12 +72,13 @@ static gboolean drain(gpointer unused) {
     }
     return G_SOURCE_CONTINUE;
 }
-static void callback(void *unused,const char *text) {
-    Event *e=g_new0(Event,1);e->text=g_strdup(text);
+static void callback(void *context,const char *text) {
+    Event *e=g_new0(Event,1);e->text=g_strdup(text);e->generation=(uint64_t)(uintptr_t)context;
     JsonParser *p=json_parser_new();
     if (json_parser_load_from_data(p,text,-1,NULL)) e->key=motion_key(json_node_get_object(json_parser_get_root(p)));
     g_object_unref(p);
     g_mutex_lock(&queue_lock);
+    if (!accepting || e->generation!=generation) { g_mutex_unlock(&queue_lock); event_free(e); return; }
     Event *last=g_queue_peek_tail(&queue);
     if (e->key && last && g_strcmp0(e->key,last->key)==0) {event_free(g_queue_pop_tail(&queue));}
     g_queue_push_tail(&queue,e);
@@ -80,11 +86,27 @@ static void callback(void *unused,const char *text) {
     g_mutex_unlock(&queue_lock);
     if (start) g_idle_add_full(G_PRIORITY_HIGH,drain,NULL,NULL);
 }
-void direct_init(void){g_mutex_lock(&transport_lock);if (!transport) transport=mesh_direct_new(app.device_id,callback,NULL);g_mutex_unlock(&transport_lock);}
+void direct_init(void){
+    if (!app_operational()) return;
+    g_mutex_lock(&transport_lock);
+    if (!transport) {
+        g_mutex_lock(&queue_lock); accepting=true;generation=++next_generation;uint64_t token=generation;g_mutex_unlock(&queue_lock);
+        transport=mesh_direct_new(app.device_id,callback,(void *)(uintptr_t)token);
+        if (transport) mesh_direct_hub(transport,"{\"t\":\"hub_connected\"}");
+    }
+    g_mutex_unlock(&transport_lock);
+}
 void direct_hub(const char *json){g_mutex_lock(&transport_lock);if (transport) mesh_direct_hub(transport,json);g_mutex_unlock(&transport_lock);}
 bool direct_input(const char *json){g_mutex_lock(&transport_lock);bool result=transport && mesh_direct_input(transport,json);g_mutex_unlock(&transport_lock);return result;}
 void direct_disconnect(void){g_mutex_lock(&transport_lock);if (transport) mesh_direct_disconnect(transport);g_mutex_unlock(&transport_lock);}
-void direct_shutdown(void){g_mutex_lock(&transport_lock);if (transport){mesh_direct_free(transport);transport=NULL;}g_mutex_unlock(&transport_lock);}
+void direct_shutdown(void){
+    g_mutex_lock(&queue_lock); accepting=false; generation=0; scheduled=false;
+    while (!g_queue_is_empty(&queue)) event_free(g_queue_pop_head(&queue));
+    g_mutex_unlock(&queue_lock);
+    g_mutex_lock(&transport_lock);
+    if (transport){mesh_direct_free(transport);transport=NULL;}
+    g_mutex_unlock(&transport_lock);
+}
 
 uint64_t direct_now_us(void){return mesh_direct_now_us();}
 void direct_applied(JsonObject *trace){

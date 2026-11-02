@@ -88,6 +88,9 @@ pub enum ClientMsg {
         #[serde(default)]
         version: String,
     },
+    DeviceHello { id: String, name: String, platform: Platform, w: f64, h: f64, #[serde(default)] version: String, public_key: String },
+    DeviceProof { signature: String },
+    DeviceTrust { id: String, fingerprint: String, approved: bool },
     /// The physical cursor of this device is pushing against a screen edge.
     /// `pos` is the 0..1 position along that edge.
     Edge { dir: Dir, pos: f64 },
@@ -106,6 +109,8 @@ pub enum ClientMsg {
     /// Pause or resume keyboard/mouse sharing for this device (tray switch). A paused
     /// device stays online for clipboard, files and layout but never takes part in control.
     Sharing { enabled: bool },
+    /// Account-scoped client dormancy, independent of the keyboard/mouse switch.
+    DeviceEnabled { id: String, enabled: bool },
     /// Partial settings update from the layout page; omitted fields keep their value.
     Settings {
         #[serde(default)]
@@ -142,6 +147,10 @@ pub struct DeviceView {
     pub online: bool,
     /// Online and taking part in keyboard/mouse sharing.
     pub sharing: bool,
+    pub enabled: bool,
+    pub trusted: bool,
+    pub fingerprint: String,
+    pub approval_status: String,
     pub version: String,
 }
 
@@ -187,7 +196,9 @@ pub struct ActiveView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum HubMsg {
-    Welcome { id: String, user: String },
+    Welcome { id: String, user: String, auth_version: u32 },
+    DeviceChallenge { user: String, nonce: String },
+    DeviceAuth { status: String, fingerprint: String, #[serde(skip_serializing_if = "Option::is_none")] token: Option<String> },
     State { devices: Vec<DeviceView>, active: Option<ActiveView>, settings: Settings },
     /// Screen edges of the receiving device that lead to an online neighbour.
     Edges { left: bool, right: bool, up: bool, down: bool },

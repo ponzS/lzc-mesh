@@ -2,6 +2,8 @@
 //! every request and injects `X-HC-User-ID`. Native clients reach it through
 //! the LazyCat network using the session cookie of the local LazyCat client.
 
+#[path = "../../../lzc-mesh-client/transport/src/identity.rs"]
+mod identity;
 mod files;
 mod files_api;
 mod hub;
@@ -31,6 +33,9 @@ use hub::Hub;
 use protocol::{ClientMsg, HubMsg};
 use store::Store;
 
+#[cfg(test)]
+mod origin_tests;
+
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -46,7 +51,7 @@ pub fn user_of(headers: &HeaderMap) -> Option<String> {
 
 async fn whoami(headers: HeaderMap) -> Response {
     match user_of(&headers) {
-        Some(user) => Json(serde_json::json!({ "user": user, "version": env!("CARGO_PKG_VERSION") })).into_response(),
+        Some(user) => Json(serde_json::json!({ "user": user, "version": env!("CARGO_PKG_VERSION"), "device_auth_version": 1 })).into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
@@ -55,7 +60,23 @@ async fn ws(State(app): State<App>, headers: HeaderMap, upgrade: WebSocketUpgrad
     let Some(user) = user_of(&headers) else {
         return (StatusCode::UNAUTHORIZED, "login required").into_response();
     };
+    if !same_origin(&headers) { return (StatusCode::FORBIDDEN, "origin rejected").into_response(); }
     upgrade.max_message_size(64 * 1024).on_upgrade(move |socket| session(app, user, socket))
+}
+
+pub fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get("origin") else { return true };
+    let (Ok(origin), Some(host)) = (origin.to_str(), headers.get("host").and_then(|v|v.to_str().ok())) else { return false };
+    let (Ok(uri),Ok(host)) = (origin.parse::<axum::http::Uri>(),host.parse::<axum::http::uri::Authority>()) else { return false };
+    let Some(authority)=uri.authority() else{return false};
+    let local=matches!(host.host(),"127.0.0.1"|"localhost"|"[::1]");
+    let port=match uri.scheme_str(){Some("https")=>443,Some("http") if local=>80,_=>return false};
+    !authority.as_str().contains('@') && !host.as_str().contains('@')
+        && authority.host().eq_ignore_ascii_case(host.host())
+        && authority.port_u16().unwrap_or(port)==host.port_u16().unwrap_or(port)
+        && !(authority.port().is_some() && authority.port_u16().is_none())
+        && !(host.port().is_some() && host.port_u16().is_none())
+        && uri.path().trim_matches('/').is_empty() && uri.query().is_none()
 }
 
 async fn session(app: App, user: String, socket: WebSocket) {
@@ -90,7 +111,12 @@ async fn session(app: App, user: String, socket: WebSocket) {
     while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
         match frame {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(msg) => room.lock().await.handle(conn, msg),
+                Ok(msg) => {
+                    let refresh_files = matches!(&msg, ClientMsg::Hello { .. } | ClientMsg::DeviceProof { .. } | ClientMsg::DeviceTrust { approved: true, .. } | ClientMsg::DeviceEnabled { enabled: true, .. });
+                    let mut r = room.lock().await;
+                    r.handle(conn, msg);
+                    if refresh_files { r.files_changed(app.files.list(&user)); }
+                },
                 Err(err) => tracing::debug!(conn, "bad frame: {err}"),
             },
             Message::Close(_) => break,

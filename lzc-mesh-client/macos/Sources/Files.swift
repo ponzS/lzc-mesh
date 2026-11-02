@@ -8,28 +8,41 @@ struct SharedFile {
 
 final class FilesClient {
     var onStatus: ((String) -> Void)?
+    private var active = false
+    private var generation = 0
+    private var tasks: [UUID: URLSessionTask] = [:]
+
+    func setActive(_ on: Bool) {
+        guard active != on else { return }
+        active = on; generation += 1
+        for task in tasks.values { task.cancel() }
+        tasks.removeAll()
+        onStatus?(on ? "文件共享已就绪" : "客户端已关闭，文件共享已停用")
+    }
     private let session: URLSession = {
         let c = URLSessionConfiguration.default
         c.connectionProxyDictionary = [:]
         c.httpShouldSetCookies = false
         c.timeoutIntervalForRequest = 60
         c.timeoutIntervalForResource = 24 * 3600
-        return URLSession(configuration: c)
+        return URLSession(configuration: c, delegate: nil, delegateQueue: .main)
     }()
 
     private func request(_ method: String, _ name: String) -> URLRequest? {
         let s = AppState.shared
-        guard !s.boxDomain.isEmpty, let esc = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+        guard active, s.operational, !s.boxDomain.isEmpty, let esc = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
               let url = URL(string: "https://lzc-mesh.\(s.boxDomain)/api/files/\(esc)") else { return nil }
         var r = URLRequest(url: url)
         r.httpMethod = method
         r.setValue("Lzc-Auth-Token=\(s.cookie)", forHTTPHeaderField: "Cookie")
         let dev = (Host.current().localizedName ?? "Mac").addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "Mac"
         r.setValue(dev, forHTTPHeaderField: "X-Lzc-Mesh-Device")
+        r.setValue(s.deviceID, forHTTPHeaderField: "X-Lzc-Mesh-Device-Id")
+        r.setValue(s.fileToken, forHTTPHeaderField: "X-Lzc-Mesh-Device-Token")
         return r
     }
 
-    private func status(_ text: String) { DispatchQueue.main.async { self.onStatus?(text) } }
+    private func status(_ text: String) { onStatus?(text) }
 
     func upload(_ file: URL) {
         let name = file.lastPathComponent
@@ -37,27 +50,33 @@ final class FilesClient {
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         status("正在上传 \(name)（\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))）…")
-        session.uploadTask(with: req, fromFile: file) { _, resp, err in
+        let id = UUID(), epoch = generation
+        let task = session.uploadTask(with: req, fromFile: file) { [weak self] _, resp, err in
+            guard let self else { return }
+            self.tasks[id] = nil
+            guard self.active, self.generation == epoch, AppState.shared.operational else { return }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            DispatchQueue.main.async {
-                if code == 200 { AppState.shared.log("已上传 \(name)"); self.onStatus?("已上传 \(name)") }
-                else {
-                    let why = err?.localizedDescription ?? (code == 413 ? "文件过大" : "HTTP \(code)")
-                    AppState.shared.log("上传 \(name) 失败：\(why)")
-                    self.onStatus?("上传失败：\(why)")
-                }
+            if code == 200 { AppState.shared.log("已上传 \(name)"); self.onStatus?("已上传 \(name)") }
+            else {
+                let why = err?.localizedDescription ?? (code == 413 ? "文件过大" : "HTTP \(code)")
+                AppState.shared.log("上传 \(name) 失败：\(why)"); self.onStatus?("上传失败：\(why)")
             }
-        }.resume()
+        }
+        tasks[id] = task; task.resume()
     }
 
     func download(_ name: String) {
         guard let req = request("GET", name) else { return }
         status("正在下载 \(name)…")
-        session.downloadTask(with: req) { tmp, resp, err in
+        let id = UUID(), epoch = generation
+        let task = session.downloadTask(with: req) { [weak self] tmp, resp, err in
+            guard let self else { return }
+            self.tasks[id] = nil
+            guard self.active, self.generation == epoch, AppState.shared.operational else { return }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard let tmp = tmp, code == 200 else {
                 let why = err?.localizedDescription ?? "HTTP \(code)"
-                DispatchQueue.main.async { AppState.shared.log("下载 \(name) 失败：\(why)"); self.onStatus?("下载失败：\(why)") }
+                AppState.shared.log("下载 \(name) 失败：\(why)"); self.onStatus?("下载失败：\(why)")
                 return
             }
             let fm = FileManager.default
@@ -71,23 +90,27 @@ final class FilesClient {
             }
             do {
                 try fm.moveItem(at: tmp, to: dest)
-                DispatchQueue.main.async {
-                    AppState.shared.log("已下载 \(name) → \(dest.path)")
-                    self.onStatus?("已下载到 \(dest.path)")
-                    NSWorkspace.shared.activateFileViewerSelecting([dest])
-                }
+                AppState.shared.log("已下载 \(name) → \(dest.path)")
+                self.onStatus?("已下载到 \(dest.path)")
+                NSWorkspace.shared.activateFileViewerSelecting([dest])
             } catch {
-                DispatchQueue.main.async { self.onStatus?("保存失败：\(error.localizedDescription)") }
+                self.onStatus?("保存失败：\(error.localizedDescription)")
             }
-        }.resume()
+        }
+        tasks[id] = task; task.resume()
     }
 
     func delete(_ name: String) {
         guard let req = request("DELETE", name) else { return }
-        session.dataTask(with: req) { _, resp, err in
+        let id = UUID(), epoch = generation
+        let task = session.dataTask(with: req) { [weak self] _, resp, err in
+            guard let self else { return }
+            self.tasks[id] = nil
+            guard self.active, self.generation == epoch, AppState.shared.operational else { return }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             self.status(code == 204 || code == 404 ? "已删除 \(name)" : "删除失败：\(err?.localizedDescription ?? "HTTP \(code)")")
-        }.resume()
+        }
+        tasks[id] = task; task.resume()
     }
 }
 
@@ -98,6 +121,7 @@ final class FilesView: NSView {
     private let statusLabel = makeLabel("", size: 11, color: Theme.muted)
     private let emptyLabel = makeLabel("还没有共享文件。点击“上传文件”或把文件拖到这里。", size: 12, color: Theme.muted)
     private var names: [String] = []
+    private var uploadButton: NSButton?
     private let df: DateFormatter = { let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f }()
 
     override init(frame: NSRect) {
@@ -122,6 +146,7 @@ final class FilesView: NSView {
         ])
         emptyLabel.alignment = .center
         let upload = FlatButton(title: "上传文件", primary: true, target: self, action: #selector(pick))
+        uploadButton = upload; upload.isEnabled = false
         let hint = makeLabel("所有设备都能下载；下载到“下载”文件夹，也可把文件拖进来", size: 11, color: Theme.muted)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -146,6 +171,12 @@ final class FilesView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     final class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+    func setActive(_ on: Bool) {
+        client.setActive(on)
+        uploadButton?.isEnabled = on
+        if !on { update([]) }
+    }
 
     func update(_ files: [SharedFile]) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -179,7 +210,7 @@ final class FilesView: NSView {
     }
 
     @objc private func pick() {
-        guard AppState.shared.hubConnected else { statusLabel.stringValue = "连接中枢后才能上传"; return }
+        guard AppState.shared.operational else { statusLabel.stringValue = "连接中枢后才能上传"; return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -202,10 +233,10 @@ final class FilesView: NSView {
         a.beginSheetModal(for: window!) { r in if r == .alertFirstButtonReturn { self.client.delete(name) } }
     }
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { AppState.shared.hubConnected ? .copy : [] }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { AppState.shared.operational ? .copy : [] }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else { return false }
+        guard AppState.shared.operational, let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else { return false }
         urls.filter { !$0.hasDirectoryPath }.forEach { client.upload($0) }
         return true
     }

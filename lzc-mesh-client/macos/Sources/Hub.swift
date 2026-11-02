@@ -6,6 +6,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     private var session: URLSession!
     private(set) var connecting = false
     private var pingTimer: Timer?
+    private var closing = false
+    private var identity: DeviceIdentity?
     private var lastMoveLog = Date.distantPast
     private lazy var direct = DirectTransport(hub: self)
     var input: MacInput!
@@ -27,6 +29,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         var req = URLRequest(url: URL(string: url)!)
         req.setValue("Lzc-Auth-Token=\(s.cookie)", forHTTPHeaderField: "Cookie")
         connecting = true
+        closing = false
         s.set(.hub, .warn, "正在连接 \(url)")
         let t = session.webSocketTask(with: req)
         t.maximumMessageSize = 1 << 20
@@ -35,13 +38,21 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         receive(t)
     }
 
-    func disconnect() { task?.cancel(with: .normalClosure, reason: nil) }
+    func disconnect() {
+        closing = true
+        let s = AppState.shared
+        s.authVerified = false; s.fileToken = ""
+        s.updateClientState(nil)
+        direct.disconnected()
+        task?.cancel(with: .normalClosure, reason: nil)
+    }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol p: String?) {
-        guard webSocketTask === task else { return }
+        guard webSocketTask === task, !closing else { return }
         connecting = false
         let s = AppState.shared
         s.hubConnected = true
+        s.authVerified = false; s.fileToken = ""; s.updateClientState(nil)
         s.set(.hub, .ok, "已连接")
         s.log("已连接设备接力中枢")
         sendHello()
@@ -66,6 +77,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         connecting = false
         pingTimer?.invalidate(); pingTimer = nil
         s.hubConnected = false
+        s.authVerified = false; s.fileToken = ""
+        s.updateClientState(nil)
         direct.disconnected()
         if wasConnected {
             s.log("与设备接力中枢的连接已断开：\(why)")
@@ -85,7 +98,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
 
     private func receive(_ t: URLSessionWebSocketTask) {
         t.receive { [weak self] result in
-            guard let self = self, t === self.task else { return }
+            guard let self = self, t === self.task, !self.closing else { return }
             if case .success(let msg) = result {
                 if case .string(let text) = msg, let data = text.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -98,11 +111,13 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     }
 
     func send(_ obj: [String: Any]) {
+        if !AppState.shared.operational && ["edge", "motion", "button", "wheel", "key", "clipboard", "layout", "forget"].contains(obj["t"] as? String ?? "") { return }
         if direct.input(obj) { return }
         sendRaw(obj)
     }
 
     func sendRaw(_ obj: [String: Any]) {
+        if !AppState.shared.operational && ["direct_relay", "direct_begin", "direct_route", "direct_legacy"].contains(obj["t"] as? String ?? "") { return }
         guard let t = task, AppState.shared.hubConnected,
               let data = try? JSONSerialization.data(withJSONObject: obj), let text = String(data: data, encoding: .utf8) else { return }
         t.send(.string(text)) { _ in }
@@ -110,17 +125,42 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
 
     func sendHello() {
         let s = AppState.shared
-        send(["t": "hello", "id": s.deviceID, "name": Host.current().localizedName ?? "Mac", "platform": "macos",
-              "w": s.screenW, "h": s.screenH, "version": AppState.version])
-        if !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
+        if identity == nil {
+            do { identity = try DeviceIdentity() }
+            catch { s.set(.deviceTrust, .error, "设备凭证不可用；共享已停止，未重置原凭证"); return }
+        }
+        guard let identity else { return }
+        if !s.authVerified { s.set(.deviceTrust, .unknown, "等待批准 · 指纹 \(identity.fingerprint)") }
+        send(["t": s.authVerified ? "hello" : "device_hello", "id": s.deviceID, "name": Host.current().localizedName ?? "Mac", "platform": "macos",
+              "w": s.screenW, "h": s.screenH, "version": AppState.version, "public_key": identity.publicKey])
+        if s.authVerified && !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
     func handle(_ o: [String: Any]) {
         let s = AppState.shared
         let t = o["t"] as? String ?? ""
         let x = o["x"] as? Double ?? 0.5, y = o["y"] as? Double ?? 0.5
+        if !s.operational && ["capture", "enter", "move", "button", "wheel", "key", "clipboard", "files"].contains(t) { return }
         switch t {
+        case "device_challenge":
+            guard let identity, let user = o["user"] as? String, user == s.hubUser,
+                  let nonce = o["nonce"] as? String, nonce.utf8.count == 44 else { disconnect(); return }
+            let proof = identity.proof(user: user, deviceID: s.deviceID, nonce: nonce)
+            if !proof.isEmpty { sendRaw(["t": "device_proof", "signature": proof]) }
+        case "device_auth":
+            let status = o["status"] as? String ?? ""
+            let token = o["token"] as? String ?? ""
+            s.authVerified = identity != nil && o["fingerprint"] as? String == identity?.fingerprint && status == "approved" && Data(base64Encoded: token)?.count == 32
+            s.fileToken = s.authVerified ? token : ""
+            let message = s.authVerified ? "已批准" : status == "key_mismatch" ? "凭证不匹配，拒绝绑定" : status == "revoked" ? "信任已撤销" : "等待管理页核对并批准"
+            s.set(.deviceTrust, s.authVerified ? .ok : .warn, "\(message) · 指纹 \(identity?.fingerprint ?? "")")
+            let current = s.clientReady ? s.devices.first { $0.id == s.deviceID } : nil
+            s.updateClientState(current, supported: s.clientControl)
+            s.updateControlStatus(); s.updateClipboardStatus()
+            if !s.authVerified { direct.disconnected() }
+            if s.authVerified && !s.sharingEnabled { sendRaw(["t": "sharing", "enabled": false]) }
         case "welcome":
+            if o["auth_version"] as? Int != 1 { s.set(.deviceTrust, .error, "需要支持设备凭证的新版中枢；共享保持停用") }
             s.hubUser = o["user"] as? String ?? ""
             if !(o["id"] as? String ?? "").isEmpty { s.log("已加入 \(s.hubUser) 的设备组") }
         case "direct_active":
@@ -132,8 +172,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
                 MeshDevice(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "", platform: $0["platform"] as? String ?? "",
                            version: $0["version"] as? String ?? "", x: $0["x"] as? Double ?? 0, y: $0["y"] as? Double ?? 0,
                            w: $0["w"] as? Double ?? 0, h: $0["h"] as? Double ?? 0, online: $0["online"] as? Bool ?? false,
-                           sharing: $0["sharing"] as? Bool ?? true)
+                           sharing: $0["sharing"] as? Bool ?? true, enabled: $0["enabled"] as? Bool ?? true, trusted: $0["trusted"] as? Bool ?? false)
             }
+            let own = (o["devices"] as? [[String: Any]])?.first { $0["id"] as? String == s.deviceID }
+            s.updateClientState(s.devices.first { $0.id == s.deviceID }, supported: own?["enabled"] is Bool)
             let active = o["active"] as? [String: Any]
             s.activeSource = active?["source"] as? String
             s.activeTarget = active?["target"] as? String

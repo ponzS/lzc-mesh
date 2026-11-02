@@ -2,8 +2,8 @@
 1 ICON "lzc-mesh.ico"
 1 RT_MANIFEST "lzc-mesh.manifest"
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION 0,2,1,0
+PRODUCTVERSION 0,2,1,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -11,7 +11,7 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "懒猫设备接力"
       VALUE "ProductName", "懒猫设备接力"
-      VALUE "ProductVersion", "0.2.0"
+      VALUE "ProductVersion", "0.2.1"
     END
   END
   BLOCK "VarFileInfo"

@@ -3,7 +3,7 @@ import AppKit
 enum Level { case unknown, ok, warn, error }
 
 enum StatusKey: Int, CaseIterable {
-    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen, clipboard, transport, pointerChannel, keyboardChannel
+    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen, clipboard, transport, pointerChannel, keyboardChannel, deviceTrust
     var label: String {
         switch self {
         case .lzcClient: return "懒猫微服客户端"
@@ -18,6 +18,7 @@ enum StatusKey: Int, CaseIterable {
         case .transport: return "输入通道"
         case .pointerChannel: return "光标通道"
         case .keyboardChannel: return "键盘通道"
+        case .deviceTrust: return "设备信任"
         }
     }
 }
@@ -27,18 +28,24 @@ struct MeshDevice {
     var x: Double, y: Double, w: Double, h: Double
     var online: Bool
     var sharing: Bool = true
+    var enabled: Bool = true
+    var trusted: Bool = false
 }
 
 /// Main-thread state shared by all components.
 final class AppState {
     static let shared = AppState()
-    static let version = "0.2.0"
+    static let version = "0.2.1"
 
     var status: [StatusKey: (Level, String)] = Dictionary(uniqueKeysWithValues: StatusKey.allCases.map { ($0, (.unknown, "检测中…")) })
     var deviceID: String
     var boxOverride: String
     /// Keyboard/mouse sharing switched on (tray / settings switch). Persisted.
     var sharingEnabled = true
+    var clientReady = false, clientEnabled = true, clientControl = false, clientTrusted = false
+    var authVerified = false, fileToken = ""
+    var operational: Bool { hubConnected && clientReady && clientEnabled && clientTrusted && authVerified }
+    private var runtimeActive = false
 
     var boxName = "", boxDomain = "", loginUser = "", cookie = ""
     var hubConnected = false
@@ -56,6 +63,26 @@ final class AppState {
     var onDevices: (() -> Void)?
     var onLog: ((String) -> Void)?
     var onFiles: (() -> Void)?
+    var onActivity: ((Bool) -> Void)?
+
+    func updateClientState(_ device: MeshDevice?, supported: Bool = false) {
+        clientReady = device != nil
+        clientTrusted = device?.trusted ?? false
+        if let device { clientEnabled = device.enabled }
+        clientControl = supported
+        let active = operational
+        if active != runtimeActive {
+            runtimeActive = active
+            onActivity?(active)
+            if !active { files = []; onFiles?() }
+            log(active ? "客户端已开启" : "客户端已休眠：共享功能已停止，保留远程唤醒连接")
+        }
+        if !active {
+            for key in [StatusKey.transport, .pointerChannel, .keyboardChannel] {
+                set(key, .unknown, clientReady && !clientEnabled ? "客户端已关闭 · 仅保留远程唤醒连接" : "等待设备状态确认")
+            }
+        }
+    }
 
     private let configURL: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/lzc-mesh")
@@ -109,6 +136,8 @@ final class AppState {
 
     /// One-line connection summary for the header pill and the tray menu.
     func summary() -> (Level, String) {
+        if hubConnected && !authVerified { return (.warn, "设备未获信任 · 共享停用") }
+        if hubConnected && clientReady && !clientEnabled { return (.warn, "客户端已关闭 · 可远程开启") }
         if hubConnected { return (.ok, "已连接 · \(devices.filter { $0.online }.count) 台设备在线") }
         for k in [StatusKey.lzcClient, .lzcNetwork, .login, .service, .hub] {
             if let (lv, t) = status[k], lv == .error || lv == .warn { return (lv, "\(k.label)：\(t)") }
@@ -124,13 +153,17 @@ final class AppState {
     }
 
     func updateClipboardStatus() {
-        if !hubConnected { set(.clipboard, .unknown, "等待连接中枢") }
+        if hubConnected && !authVerified { set(.clipboard, .unknown, "设备未获信任，双向剪贴板已停用") }
+        else if clientReady && !clientEnabled { set(.clipboard, .unknown, "客户端已关闭，双向剪贴板已停用") }
+        else if !hubConnected { set(.clipboard, .unknown, "等待连接中枢") }
         else if clipboardEnabled { set(.clipboard, .ok, "已开启：复制的文本会同步到其他在线设备") }
         else { set(.clipboard, .unknown, "已关闭（可在管理页面或菜单栏中开启）") }
     }
 
     func updateControlStatus() {
-        if captured { set(.control, .ok, "本机正在控制 \(deviceName(activeTarget))（Ctrl+Option+Esc 收回）") }
+        if hubConnected && !authVerified { set(.control, .warn, "设备未获信任，共享保持停用；请核对指纹并批准") }
+        else if clientReady && !clientEnabled { set(.control, .warn, "客户端已关闭，可在管理页面或本机重新开启") }
+        else if captured { set(.control, .ok, "本机正在控制 \(deviceName(activeTarget))（Ctrl+Option+Esc 收回）") }
         else if controlled { set(.control, .ok, "\(deviceName(activeSource)) 正在控制本机") }
         else { set(.control, .unknown, "空闲：把光标移出屏幕边缘即可控制相邻设备") }
     }

@@ -2,21 +2,49 @@ import Foundation
 
 /// The Rust worker owns networking and routing. This adapter owns the ordered
 /// main-thread handoff; adjacent positions are replaced without crossing actions.
+private final class WeakDirectOwner {
+    weak var owner: DirectTransport?
+    init(_ owner: DirectTransport) { self.owner = owner }
+}
+private enum DirectCallbacks {
+    static let lock = NSLock()
+    static var next: UInt = 0
+    static var owners: [UInt: WeakDirectOwner] = [:]
+    static func insert(_ owner: DirectTransport) -> UInt {
+        lock.lock(); defer { lock.unlock() }
+        next += 1; owners[next] = WeakDirectOwner(owner); return next
+    }
+    static func owner(_ token: UInt) -> DirectTransport? {
+        lock.lock(); defer { lock.unlock() }; return owners[token]?.owner
+    }
+    static func remove(_ token: UInt) {
+        lock.lock(); defer { lock.unlock() }; owners.removeValue(forKey: token)
+    }
+    static let disposal = DispatchQueue(label: "cloud.lazycat.lzcmesh.transport-disposal")
+}
+
 final class DirectTransport: @unchecked Sendable {
     private lazy var bluetooth = BluetoothTransport(transport: self)
     private weak var hub: Hub?
     private var handle: OpaquePointer?
     private let lock = NSLock()
-    private var queue: [(message: [String: Any], key: String?)] = []
+    private var queue: [(message: [String: Any], key: String?, generation: UInt)] = []
+    private var generation: UInt = 0
     private var scheduled = false
+    private var accepting = false
 
     init(hub: Hub) {
         self.hub = hub
-        handle = AppState.shared.deviceID.withCString {
-            mesh_direct_new($0, directTransportCallback, Unmanaged.passUnretained(self).toOpaque())
+    }
+    deinit {
+        DirectCallbacks.remove(generation)
+        if let handle {
+            // A callback can temporarily retain its owner on a runtime thread.
+            // Dispose the foreign runtime elsewhere rather than blocking it.
+            let address = UInt(bitPattern: handle)
+            DirectCallbacks.disposal.async { mesh_direct_free(OpaquePointer(bitPattern: address)) }
         }
     }
-    deinit { if let handle { mesh_direct_free(handle) } }
 
     func input(_ object: [String: Any]) -> Bool {
         guard let handle, let data = try? JSONSerialization.data(withJSONObject: object),
@@ -24,13 +52,39 @@ final class DirectTransport: @unchecked Sendable {
         return text.withCString { mesh_direct_input(handle, $0) }
     }
     func received(_ object: [String: Any]) {
+        if object["t"] as? String == "state", let devices = object["devices"] as? [[String: Any]] {
+            let own = devices.first { $0["id"] as? String == AppState.shared.deviceID }
+            setActive(AppState.shared.authVerified && own?["trusted"] as? Bool == true && own?["enabled"] as? Bool != false)
+        }
         guard let handle, let data = try? JSONSerialization.data(withJSONObject: object),
               let text = String(data: data, encoding: .utf8) else { return }
         text.withCString { mesh_direct_hub(handle, $0) }
     }
-    func disconnected() { if let handle { mesh_direct_disconnect(handle) } }
+    func disconnected() { setActive(false) }
 
-    fileprivate func enqueue(_ text: String) {
+    private func setActive(_ on: Bool) {
+        if on {
+            guard handle == nil else { return }
+            let token = DirectCallbacks.insert(self)
+            lock.lock(); accepting = true; generation = token; lock.unlock()
+            handle = AppState.shared.deviceID.withCString {
+                mesh_direct_new($0, directTransportCallback, UnsafeMutableRawPointer(bitPattern: token))
+            }
+            if let handle { "{\"t\":\"hub_connected\"}".withCString { mesh_direct_hub(handle, $0) } }
+            else {
+                lock.lock(); accepting = false; generation = 0; lock.unlock()
+                DirectCallbacks.remove(token)
+            }
+        } else {
+            lock.lock(); accepting = false; let token = generation; generation = 0; queue.removeAll(); scheduled = false; lock.unlock()
+            DirectCallbacks.remove(token)
+            if let handle { mesh_direct_disconnect(handle); mesh_direct_free(handle) }
+            handle = nil
+            bluetooth.event(["_lan": "bt_stop"])
+        }
+    }
+
+    fileprivate func enqueue(_ text: String, generation token: UInt) {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         var key: String?
@@ -44,8 +98,9 @@ final class DirectTransport: @unchecked Sendable {
             }
         }
         lock.lock()
-        if let key, queue.last?.key == key { queue.removeLast() }
-        queue.append((object, key))
+        guard accepting && generation == token else { lock.unlock(); return }
+        if let key, queue.last?.key == key, queue.last?.generation == token { queue.removeLast() }
+        queue.append((object, key, token))
         let start = !scheduled
         scheduled = true
         lock.unlock()
@@ -58,9 +113,13 @@ final class DirectTransport: @unchecked Sendable {
         scheduled = false
         lock.unlock()
         for item in batch {
+            lock.lock(); let valid = accepting && generation == item.generation; lock.unlock()
+            if !valid { continue }
             let object = item.message
             if (object["_lan"] as? String)?.hasPrefix("bt_") == true {
-                bluetooth.event(object); continue
+                let kind = object["_lan"] as? String ?? ""
+                if AppState.shared.operational || kind == "bt_stop" || kind == "bt_close" { bluetooth.event(object) }
+                continue
             }
             switch object["_lan"] as? String {
             case "status": AppState.shared.set(.transport, .ok, object["text"] as? String ?? "")
@@ -85,5 +144,6 @@ final class DirectTransport: @unchecked Sendable {
 
 private func directTransportCallback(_ context: UnsafeMutableRawPointer?, _ text: UnsafePointer<CChar>?) {
     guard let context, let text else { return }
-    Unmanaged<DirectTransport>.fromOpaque(context).takeUnretainedValue().enqueue(String(cString: text))
+    let token = UInt(bitPattern: context)
+    DirectCallbacks.owner(token)?.enqueue(String(cString: text), generation: token)
 }

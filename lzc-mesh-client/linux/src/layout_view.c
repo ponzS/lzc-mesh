@@ -117,7 +117,7 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int W, int H, gpointer data)
             draw_text(cr, pl, d->name, compact ? small : bold, x + 6, ty, w - 12, d->online ? 0.07 : 0.47, PANGO_ALIGN_CENTER);
             draw_text(cr, pl, meta, compact ? tiny : small, x + 6, ty + th1 + 2, w - 12, 0.47, PANGO_ALIGN_CENTER);
             g_free(meta);
-            const char *role = !g_strcmp0(d->id, app.active_target) ? "受控中" : !g_strcmp0(d->id, app.active_source) ? "控制中"
+            const char *role = !d->enabled ? "已关闭" : !g_strcmp0(d->id, app.active_target) ? "受控中" : !g_strcmp0(d->id, app.active_source) ? "控制中"
                              : d->online && !d->sharing ? "已暂停" : !d->online ? "离线" : me ? "本机" : NULL;
             if (role && w > 50) draw_text(cr, pl, role, tiny, x + 4, y + 4, w - 12, active ? 0.07 : 0.47, PANGO_ALIGN_RIGHT);
         }
@@ -139,7 +139,7 @@ static int hit(View *v, double px, double py) {
 
 static void drag_begin(GtkGestureDrag *g, double sx, double sy, GtkWidget *w) {
     View *v = view_of(w);
-    v->drag = app.hub_connected ? hit(v, sx, sy) : -1;
+    v->drag = app_operational() ? hit(v, sx, sy) : -1;
     if (v->drag < 0) return;
     MeshDevice *d = g_ptr_array_index(app.devices, v->drag);
     v->drag_x = v->ox + d->x * v->scale;

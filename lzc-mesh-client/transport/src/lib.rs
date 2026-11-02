@@ -3,6 +3,7 @@
 mod bluetooth;
 mod lan;
 mod metrics;
+mod identity;
 mod model;
 mod router;
 

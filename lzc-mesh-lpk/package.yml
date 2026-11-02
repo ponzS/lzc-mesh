@@ -1,7 +1,7 @@
 package: cloud.lazycat.app.lzc-mesh
-version: 0.2.0
+version: 0.2.1
 name: 懒猫设备接力
-description: Share one keyboard, mouse, clipboard and files across your Mac, Windows and Linux computers over the LazyCat network
+description: Share one keyboard, mouse, clipboard and files across your Mac, Windows and Omarchy computers (Linux supports Omarchy only) over the LazyCat network
 author: ponzs
 license: PolyForm-Noncommercial-1.0.0
 admin_only: false
@@ -11,7 +11,7 @@ permissions:
 locales:
   zh:
     name: 懒猫设备接力
-    description: 通过懒猫网络在 Mac、Windows、Linux 之间共享一套键盘和触控板，并支持共享剪贴板和跨设备文件共享
+    description: 通过懒猫网络在 Mac、Windows、Omarchy 之间（Linux 仅支持 Omarchy）共享一套键盘和触控板，并支持共享剪贴板和跨设备文件共享
   en:
     name: LazyCat Device Relay
-    description: Share one keyboard, mouse, clipboard and files across your computers over the LazyCat network
+    description: Share one keyboard, mouse, clipboard and files across macOS, Windows and Omarchy over the LazyCat network (Linux supports Omarchy only)

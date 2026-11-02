@@ -18,6 +18,7 @@ void net_send_settings(bool swap);
 void net_send_transport_mode(const char *mode);
 void net_send_clipboard(const char *text);
 void net_send_sharing(bool on);
+void net_send_enabled(const char *id, bool on);
 void net_send_clipboard_setting(bool on);
 
 void net_send_raw(const char *text);

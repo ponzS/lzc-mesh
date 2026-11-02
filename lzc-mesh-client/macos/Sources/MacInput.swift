@@ -21,6 +21,19 @@ private func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEve
 final class MacInput {
     weak var hub: Hub?
     private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
+    private var active = false
+
+    func setActive(_ on: Bool) {
+        active = on
+        if !on {
+            capture(false); leave()
+            if let source = tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+            if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+            tapSource = nil; tap = nil
+        }
+        refreshPermissionStatus()
+    }
     private var edges = [false, false, false, false]  // left right up down
     /// Mirrors the tray switch: when off, no edge pushes are reported.
     var sharingEnabled = true
@@ -62,6 +75,7 @@ final class MacInput {
     func refreshPermissionStatus() {
         let p = permissions()
         let s = AppState.shared
+        if !active { s.set(.permission, .unknown, "客户端未运行共享功能，事件监听已停止"); return }
         if p.ok {
             if tap == nil { installTap() }
             if tap != nil { s.set(.permission, .ok, "辅助功能、输入监控已授权") }
@@ -87,12 +101,14 @@ final class MacInput {
         }
         tap = t
         let src = CFMachPortCreateRunLoopSource(nil, t, 0)
+        tapSource = src
         CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
         CGEvent.tapEnable(tap: t, enable: true)
         AppState.shared.log("事件监听已启动")
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard active, AppState.shared.operational else { return Unmanaged.passUnretained(event) }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let t = tap { CGEvent.tapEnable(tap: t, enable: true) }
             AppState.shared.log("事件监听被系统暂停，已恢复")

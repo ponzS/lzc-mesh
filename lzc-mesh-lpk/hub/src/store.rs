@@ -18,7 +18,11 @@ pub struct Device {
     pub y: f64,
     #[serde(default)]
     pub version: String,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
 }
+
+fn enabled_by_default() -> bool { true }
 
 impl Device {
     pub fn right(&self) -> f64 {
@@ -29,12 +33,31 @@ impl Device {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceBinding {
+    pub public_key: String,
+    #[serde(default)]
+    pub approved: bool,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
     pub devices: BTreeMap<String, Device>,
     #[serde(default)]
     pub settings: Settings,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, DeviceBinding>,
+}
+
+// Legacy names containing '_' may also have represented punctuation or Unicode.
+// Do not guess ownership of those ambiguous directories during migration.
+pub(crate) fn account_key(user: &str) -> String {
+    if !user.is_empty() && user.chars().all(|c|c.is_ascii_alphanumeric() || c=='-') { return user.into(); }
+    let hash=ring::digest::digest(&ring::digest::SHA256,user.as_bytes());
+    format!("~{}",hash.as_ref().iter().map(|v|format!("{v:02x}")).collect::<String>())
 }
 
 #[derive(Clone)]
@@ -48,12 +71,7 @@ impl Store {
     }
 
     fn path(&self, user: &str) -> PathBuf {
-        // User ids come from the ingress header; keep the file name strictly safe.
-        let safe: String = user
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect();
-        self.dir.join(format!("{safe}.json"))
+        self.dir.join(format!("{}.json",account_key(user)))
     }
 
     pub fn load(&self, user: &str) -> Snapshot {
@@ -64,14 +82,15 @@ impl Store {
     }
 
     /// Writes atomically so a crash never leaves a truncated layout behind.
-    pub fn save(&self, user: &str, snapshot: &Snapshot) {
+    pub fn save(&self, user: &str, snapshot: &Snapshot) -> bool {
         let path = self.path(user);
         let tmp = path.with_extension("json.tmp");
         let result = std::fs::create_dir_all(&self.dir)
             .and_then(|_| std::fs::write(&tmp, serde_json::to_vec_pretty(snapshot).unwrap_or_default()))
             .and_then(|_| std::fs::rename(&tmp, &path));
-        if let Err(err) = result {
-            tracing::warn!("save layout for {user} failed: {err}");
+        match result {
+            Ok(()) => true,
+            Err(err) => { tracing::warn!("save layout for {user} failed: {err}"); false }
         }
     }
 }
@@ -79,6 +98,15 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_paths_do_not_alias_and_unambiguous_legacy_names_stay_put() {
+        assert_eq!(account_key("user-123"),"user-123");
+        let values=["a.b","a_b","a/b","a%b","用户", "", "../root"];
+        let unique:std::collections::HashSet<_>=values.iter().map(|v|account_key(v)).collect();
+        assert_eq!(unique.len(),values.len());
+        assert!(unique.iter().all(|v|v.starts_with('~') && v.len()==65 && !v.contains('/')));
+    }
 
     #[test]
     fn layouts_saved_before_the_clipboard_setting_existed_get_it_on() {

@@ -239,12 +239,12 @@ static void probe_done(GObject *src, GAsyncResult *res, gpointer data) {
     g_free(app.login_user); app.login_user = g_strdup(p->login_user);
     g_free(app.cookie); app.cookie = g_strdup(p->cookie);
     bool ready = p->net_level == ST_OK && p->login_level == ST_OK && app.status[S_SERVICE].level == ST_OK;
-    if (changed && app.hub_connected) {
+    if (changed && (app.hub_connected || net_busy())) {
         app_log("懒猫微服或登录会话变化，重新连接");
         net_disconnect();
     }
     if (ready && !app.hub_connected && !net_busy()) net_connect();
-    if (!ready && app.hub_connected) net_disconnect();
+    if (!ready && (app.hub_connected || net_busy())) net_disconnect();
     if (!ready) app_set_status(S_HUB, ST_UNKNOWN, "等待懒猫设备接力应用可用");
 }
 

@@ -20,23 +20,27 @@ namespace mainwin {
 namespace {
 using ui::S;
 
-const wchar_t *labels[S_COUNT] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板"};
+constexpr const wchar_t *labels[] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板", L"输入通道", L"光标通道", L"键盘通道", L"设备信任"};
+static_assert(sizeof(labels)/sizeof(*labels)==S_COUNT,"Every status needs a non-null painting label");
 
-HWND hLayout, hLog, hBox, hSharing, hSwap, hAutostart, hRetry, hOpen, hCopy, hBoxApply, hElevate, hUpload, hDownload, hDelete;
+HWND hLayout, hLog, hBox, hSharing, hSwap, hAutostart, hRetry, hOpen, hCopy, hBoxApply, hElevate, hUpload, hDownload, hDelete, hTransport, hPause, hClient;
 bool elevateShown = false;
 
 // Geometry computed in layout(), used by paint().
 RECT pLayout, pFiles, pStatus, pSettings, pLog, layoutHint, filesStatus, filesEmpty;
 RECT statusRows[S_COUNT];
-RECT settingText[2], boxLabel, boxFrame;
-int keyWidth = 0;
-bool compactStatus = false;   // single-line status rows when the window is too short
+RECT settingText[3], boxLabel, boxFrame, modeLabel, modeNote, rightViewport;
+int keyWidth = 0, rightOffset = 0, rightHeight = 0, rightPage = 0;
+int wheelRemainder = 0;
+const char *modes[] = {"auto", "bluetooth", "direct", "relay"};
 
-const wchar_t *settingTitle[2] = {L"开机自动启动", L"交换 Command 和 Ctrl"};
-const wchar_t *settingDetail[2] = {L"登录系统后自动在托盘运行", L"Mac 与 Windows/Linux 互控时对调这两个键"};
+const wchar_t *settingTitle[3] = {L"客户端运行", L"开机自动启动", L"交换 Command 和 Ctrl"};
+const wchar_t *settingDetail[3] = {L"关闭全部共享，保留管理连接以便远程开启", L"登录系统后自动在托盘运行", L"Mac 与 Windows/Linux 互控时对调这两个键"};
 const wchar_t *layoutHintText = L"拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Alt+Esc 收回光标。";
 
 std::wstring summary(Level &lv) {
+    if (g.hubConnected && !g.authVerified) { lv=L_WARN; return L"设备未获信任 · 共享停用"; }
+    if (g.hubConnected && g.deviceReady && !g.deviceEnabled) { lv = L_WARN; return L"客户端已关闭 · 可远程开启"; }
     if (g.hubConnected) {
         int online = 0;
         for (auto &d : g.devices) online += d.online;
@@ -77,6 +81,16 @@ int measure(HWND h, const std::wstring &s, int width, HFONT f) {
 }
 
 void place(HWND c, int x, int y, int w, int h) { SetWindowPos(c, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE); }
+void placeRight(HWND c, int x, int y, int w, int h) {
+    place(c, x, y, w, h);
+    // The left column and header do not scroll. Clip child windows as well as
+    // painted text, so controls never cover the header when scrolled out.
+    RECT visible{std::max(x, (int)rightViewport.left), std::max(y, (int)rightViewport.top),
+                 std::min(x + w, (int)rightViewport.right), std::min(y + h, (int)rightViewport.bottom)};
+    HRGN region = CreateRectRgn(std::max(0, (int)visible.left - x), std::max(0, (int)visible.top - y),
+                                std::max(0, (int)visible.right - x), std::max(0, (int)visible.bottom - y));
+    SetWindowRgn(c, region, TRUE); // Windows owns region after success.
+}
 void setBg(HWND c, COLORREF col) {
     SetPropW(c, L"bg", (HANDLE)(INT_PTR)col);
     SetPropW(c, L"bgset", (HANDLE)1);
@@ -94,7 +108,12 @@ void create(HWND h) {
     hSharing = ui::toggle(h, ID_SHARING);
     setBg(hSharing, ui::BG);
     hAutostart = ui::toggle(h, ID_AUTOSTART);
+    hClient = ui::toggle(h, ID_CLIENT);
     hSwap = ui::toggle(h, ID_SWAP);
+    hTransport = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+                                 0, 0, 10, 200, h, (HMENU)(INT_PTR)ID_TRANSPORT, nullptr, nullptr);
+    for (const auto *title : {L"自动（局域网优先）", L"仅蓝牙（实验）", L"仅局域网直连", L"仅中枢转发"}) SendMessageW(hTransport, CB_ADDSTRING, 0, (LPARAM)title);
+    hPause = ui::button(h, L"暂停全部键鼠接力", ID_PAUSE_ALL);
     hRetry = ui::button(h, L"重新检测", ID_RETRY);
     hOpen = ui::button(h, L"打开管理页面", ID_OPEN);
     hCopy = ui::button(h, L"复制诊断信息", ID_COPY);
@@ -118,7 +137,7 @@ void create(HWND h) {
 
 void onDpi(HWND h) {
     ui::makeFonts(GetDpiForWindow(h));
-    for (HWND c : {hBox}) SendMessageW(c, WM_SETFONT, (WPARAM)ui::F.body, TRUE);
+    for (HWND c : {hBox, hTransport}) SendMessageW(c, WM_SETFONT, (WPARAM)ui::F.body, TRUE);
     SendMessageW(hLog, WM_SETFONT, (WPARAM)ui::F.mono, TRUE);
     // EDIT inner margins so text doesn't touch the border.
     SendMessageW(hBox, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(6), S(6)));
@@ -132,19 +151,19 @@ void layout(HWND h) {
     const int pad = S(20), gap = S(14), inner = S(16), titleH = S(40);
     const int rightW = std::min(S(450), std::max(S(360), (int)(rc.right * 0.38)));
     int top = S(HEADER);
-    compactStatus = false;
-relayout:
 
     // Header switch
     place(hSharing, rc.right - pad - S(36), (top - S(22)) / 2, S(36), S(22));
 
     // Right column
     int rx = rc.right - pad - rightW, rw = rightW, cw = rw - 2 * inner;
+    rightViewport = RECT{rx, top, rx + rw, std::max((LONG)top, rc.bottom - pad)};
+    rightPage = rightViewport.bottom - rightViewport.top;
     keyWidth = S(96);
     int textW = cw - S(16) - keyWidth;
-    int y = top + titleH;
+    int y = top - rightOffset + titleH;
     for (int i = 0; i < S_COUNT; i++) {
-        int th = compactStatus ? S(18) : std::max(S(18), measure(h, g.status[i].text, textW, ui::F.body));
+        int th = std::max(S(18), measure(h, g.status[i].text, textW, ui::F.body));
         statusRows[i] = RECT{rx + inner, y, rx + rw - inner, y + th};
         y += th + S(7);
     }
@@ -152,43 +171,53 @@ relayout:
     int bx = rx + inner;
     if (elevateShown) {
         int ew = ui::buttonWidth(hElevate);
-        place(hElevate, bx, by, ew, bh);
+        placeRight(hElevate, bx, by, ew, bh);
         by += bh + S(8);
     }
     for (HWND b : {hRetry, hOpen, hCopy}) {
         int bw = ui::buttonWidth(b);
-        place(b, bx, by, bw, bh);
+        placeRight(b, bx, by, bw, bh);
         bx += bw + S(8);
     }
-    pStatus = RECT{rx, top, rx + rw, by + bh + inner};
+    pStatus = RECT{rx, top - rightOffset, rx + rw, by + bh + inner};
 
     // Settings
     y = pStatus.bottom + gap;
     int sy = y + titleH;
-    HWND toggles[2] = {hAutostart, hSwap};
-    for (int i = 0; i < 2; i++) {
+    HWND toggles[3] = {hClient, hAutostart, hSwap};
+    for (int i = 0; i < 3; i++) {
         settingText[i] = RECT{rx + inner, sy, rx + rw - inner - S(48), sy + S(38)};
-        place(toggles[i], rx + rw - inner - S(36), sy + S(2), S(36), S(22));
+        placeRight(toggles[i], rx + rw - inner - S(36), sy + S(2), S(36), S(22));
         sy += S(48);
     }
+    modeLabel = RECT{rx + inner, sy, rx + rw - inner, sy + S(20)};
+    sy += S(24);
+    placeRight(hTransport, rx + inner, sy, cw, S(180));
+    sy += S(32);
+    modeNote = RECT{rx + inner, sy, rx + rw - inner, sy + S(18)};
+    sy += S(26);
+    placeRight(hPause, rx + inner, sy, ui::buttonWidth(hPause), S(30));
+    sy += S(42);
     boxLabel = RECT{rx + inner, sy, rx + rw - inner, sy + S(20)};
     sy += S(24);
     int applyW = ui::buttonWidth(hBoxApply);
     boxFrame = RECT{rx + inner, sy, rx + rw - inner - applyW - S(8), sy + S(30)};
-    place(hBox, boxFrame.left + S(9), boxFrame.top + S(6), boxFrame.right - boxFrame.left - S(18), S(18));
-    place(hBoxApply, rx + rw - inner - applyW, sy, applyW, S(30));
+    placeRight(hBox, boxFrame.left + S(9), boxFrame.top + S(6), boxFrame.right - boxFrame.left - S(18), S(18));
+    placeRight(hBoxApply, rx + rw - inner - applyW, sy, applyW, S(30));
     sy += S(30);
     pSettings = RECT{rx, y, rx + rw, sy + inner};
 
-    // Log takes what is left on the right. If the status texts leave it too little
-    // room, show them on one line each (with ellipsis) instead of cutting the log off.
+    // The right column scrolls independently; status details, mode selection
+    // and a useful event log remain accessible at the minimum window size.
     y = pSettings.bottom + gap;
-    if (!compactStatus && (int)rc.bottom - pad - y < S(140)) {
-        compactStatus = true;
-        goto relayout;
-    }
-    pLog = RECT{rx, y, rx + rw, std::max(y + S(100), (int)rc.bottom - pad)};
-    place(hLog, rx + inner, y + titleH, cw, pLog.bottom - y - titleH - inner);
+    pLog = RECT{rx, y, rx + rw, std::max(y + S(200), (int)rc.bottom - pad - rightOffset)};
+    rightHeight = pLog.bottom + rightOffset - top;
+    const int clamped = std::clamp(rightOffset, 0, std::max(0, rightHeight - rightPage));
+    if (clamped != rightOffset) { rightOffset = clamped; layout(h); return; }
+    SCROLLINFO info{sizeof info, SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL};
+    info.nMax = std::max(0, rightHeight - 1); info.nPage = rightPage; info.nPos = rightOffset;
+    SetScrollInfo(h, SB_VERT, &info, TRUE);
+    placeRight(hLog, rx + inner, y + titleH, cw, pLog.bottom - y - titleH - inner);
 
     // Left column: layout grows, files gets a fixed share
     int lx = pad, lw = rx - gap - pad;
@@ -254,11 +283,13 @@ void paint(HWND h) {
     panel(dc, pFiles, L"文件共享");
     if (files::empty()) {
         // The list is hidden while empty, so this text is visible.
-        ui::drawText(dc, g.hubConnected ? L"还没有共享文件。点击“上传文件”或把文件拖到窗口上。" : L"连接后显示共享文件", filesEmpty, ui::F.body, ui::MUTED,
+        ui::drawText(dc, g.deviceReady && !g.deviceEnabled ? L"客户端已关闭，开启后恢复文件共享" : g.operational() ? L"还没有共享文件。点击“上传文件”或把文件拖到窗口上。" : L"连接后显示共享文件", filesEmpty, ui::F.body, ui::MUTED,
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     ui::drawText(dc, files::status(), filesStatus, ui::F.small, ui::MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, rightViewport.left, rightViewport.top, rightViewport.right, rightViewport.bottom);
     panel(dc, pStatus, L"连接状态");
     for (int i = 0; i < S_COUNT; i++) {
         RECT r = statusRows[i];
@@ -266,22 +297,25 @@ void paint(HWND h) {
         RECT k{r.left + S(16), r.top, r.left + S(16) + keyWidth, r.bottom};
         ui::drawText(dc, labels[i], k, ui::F.body, ui::MUTED, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         RECT v{k.right, r.top, r.right, r.bottom};
-        UINT wrap = compactStatus ? DT_SINGLELINE | DT_END_ELLIPSIS : DT_WORDBREAK;
+        UINT wrap = DT_WORDBREAK;
         ui::drawText(dc, g.status[i].text, v, g.status[i].level == L_ERROR ? ui::F.bodyBold : ui::F.body, ui::TEXT, DT_LEFT | DT_TOP | wrap | DT_NOPREFIX);
     }
 
     panel(dc, pSettings, L"设置");
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         RECT r = settingText[i];
         RECT a{r.left, r.top, r.right, r.top + S(19)};
         ui::drawText(dc, settingTitle[i], a, ui::F.body, ui::TEXT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         RECT b{r.left, r.top + S(20), r.right, r.bottom};
         ui::drawText(dc, settingDetail[i], b, ui::F.small, ui::MUTED, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
+    ui::drawText(dc, L"输入通道", modeLabel, ui::F.body, ui::TEXT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    ui::drawText(dc, L"仅蓝牙 / 局域网不可用时不回退", modeNote, ui::F.small, ui::MUTED, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
     ui::drawText(dc, L"使用的微服", boxLabel, ui::F.body, ui::TEXT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
     ui::fillRound(dc, boxFrame, S(10), ui::PANEL, GetFocus() == hBox ? RGB(150, 150, 150) : ui::LINE);
 
     panel(dc, pLog, L"事件日志");
+    RestoreDC(dc, saved);
 
     BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
@@ -293,8 +327,18 @@ void paint(HWND h) {
 void refresh() {
     if (!hSharing) return;
     ui::setToggle(hSharing, g.sharingEnabled);
+    ui::setToggle(hClient, g.deviceEnabled);
+    EnableWindow(hClient, g.hubConnected && g.deviceReady && g.deviceControl);
+    EnableWindow(hSharing, g.operational());
+    for (HWND b : {hUpload, hDownload, hDelete, hLayout}) EnableWindow(b, g.operational());
     ui::setToggle(hSwap, g.swapCmdCtrl);
     ui::setToggle(hAutostart, autostart::enabled());
+    int selected = 0;
+    for (int i = 0; i < 4; i++) if (g.transportMode == modes[i]) selected = i;
+    if (SendMessageW(hTransport, CB_GETCURSEL, 0, 0) != selected) SendMessageW(hTransport, CB_SETCURSEL, selected, 0);
+    EnableWindow(hTransport, g.hubConnected && g.authVerified && g.nativeProtocol);
+    EnableWindow(hPause, g.hubConnected && g.authVerified && g.nativeProtocol);
+    SetWindowTextW(hPause, g.inputEnabled ? L"暂停全部键鼠接力" : L"恢复全部键鼠接力");
     layoutview::refresh();
     // Status text heights can change; relayout repositions the buttons under them.
     layout(g.hwnd);
@@ -308,4 +352,28 @@ void showElevate(bool show) {
 }
 
 void setOpenEnabled(bool on) { EnableWindow(hOpen, on); }
+std::string selectedTransport() {
+    int selected = (int)SendMessageW(hTransport, CB_GETCURSEL, 0, 0);
+    return selected >= 0 && selected < 4 ? modes[selected] : g.transportMode;
+}
+void scroll(int code) {
+    int position = rightOffset;
+    SCROLLINFO info{sizeof info, SIF_TRACKPOS};
+    if (code == SB_THUMBTRACK || code == SB_THUMBPOSITION) { GetScrollInfo(g.hwnd, SB_VERT, &info); position = info.nTrackPos; }
+    else if (code == SB_LINEUP) position -= S(36);
+    else if (code == SB_LINEDOWN) position += S(36);
+    else if (code == SB_PAGEUP) position -= rightPage;
+    else if (code == SB_PAGEDOWN) position += rightPage;
+    else if (code == SB_TOP) position = 0;
+    else if (code == SB_BOTTOM) position = rightHeight;
+    position = std::clamp(position, 0, std::max(0, rightHeight - rightPage));
+    if (position != rightOffset) { rightOffset = position; layout(g.hwnd); }
+}
+bool wheel(POINT point, int delta) {
+    if (!PtInRect(&rightViewport, point)) return false;
+    wheelRemainder += delta;
+    while (wheelRemainder >= WHEEL_DELTA) { scroll(SB_LINEUP); wheelRemainder -= WHEEL_DELTA; }
+    while (wheelRemainder <= -WHEEL_DELTA) { scroll(SB_LINEDOWN); wheelRemainder += WHEEL_DELTA; }
+    return true;
+}
 }  // namespace mainwin

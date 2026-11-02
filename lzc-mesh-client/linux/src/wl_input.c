@@ -260,7 +260,7 @@ static void hide_cursor(void) {
 
 static void maybe_edge(void) {
     Surf *s = W.pointer_on;
-    if (!s || s->dir < 0 || app.captured || app.controlled || !app.hub_connected || !app.sharing_enabled) return;
+    if (!s || s->dir < 0 || app.captured || app.controlled || !app_operational() || !app.sharing_enabled) return;
     gint64 now = g_get_monotonic_time();
     if (now < W.quiet_until || now - W.last_edge < 250 * 1000) return;
     W.last_edge = now;
@@ -424,11 +424,12 @@ static gboolean on_wayland(gint fd, GIOCondition cond, gpointer d) {
 }
 
 static bool setup_virtual_keyboard(void) {
-    W.xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!W.xkb) W.xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     // evdev rules with the user's default layout so that keycodes map 1:1 to evdev codes.
     struct xkb_rule_names names = {.rules = "evdev"};
-    W.keymap = xkb_keymap_new_from_names(W.xkb, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!W.keymap) W.keymap = xkb_keymap_new_from_names(W.xkb, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (!W.keymap) return false;
+    if (W.xkb_state) xkb_state_unref(W.xkb_state);
     W.xkb_state = xkb_state_new(W.keymap);
     char *map = xkb_keymap_get_as_string(W.keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
     size_t size = strlen(map) + 1;
@@ -468,8 +469,7 @@ void wl_input_init(void) {
     if (!W.relative_manager) g_string_append(missing, " relative-pointer");
     if (!W.xdg_output_manager) g_string_append(missing, " xdg-output");
     clipboard_start(W.seat);
-    if (W.vp_manager && W.seat) W.vpointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(W.vp_manager, W.seat);
-    bool kb = W.vk_manager && W.seat && setup_virtual_keyboard();
+    bool kb = W.vk_manager && W.seat;
     if (missing->len) {
         app_set_status(S_INPUT, ST_ERROR, "合成器缺少协议：%s。请使用 Hyprland / Sway 等 wlroots 合成器", missing->str);
     } else if (!kb) {
@@ -481,6 +481,23 @@ void wl_input_init(void) {
     g_string_free(missing, TRUE);
     update_screen();
     W.watch = g_unix_fd_add(wl_display_get_fd(W.display), G_IO_IN | G_IO_ERR | G_IO_HUP, on_wayland, NULL);
+    flush();
+}
+
+void wl_input_set_active(bool on) {
+    clipboard_set_active(on);
+    if (!W.display) return;
+    if (!on) {
+        wl_input_capture(false); wl_input_leave();
+        if (W.vkeyboard) { zwp_virtual_keyboard_v1_destroy(W.vkeyboard); W.vkeyboard = NULL; }
+        if (W.vpointer) { zwlr_virtual_pointer_v1_destroy(W.vpointer); W.vpointer = NULL; }
+        app_set_status(S_INPUT, ST_UNKNOWN, "客户端已关闭，虚拟输入已停用");
+    } else {
+        if (!W.vpointer && W.vp_manager && W.seat) W.vpointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(W.vp_manager, W.seat);
+        if (!W.vkeyboard && W.vk_manager && W.seat) setup_virtual_keyboard();
+        app_set_status(S_INPUT, W.vpointer && W.vkeyboard ? ST_OK : ST_ERROR,
+                       W.vpointer && W.vkeyboard ? "Wayland 虚拟输入已就绪" : "无法启用 Wayland 虚拟输入");
+    }
     flush();
 }
 

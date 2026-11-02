@@ -62,6 +62,8 @@ HICON makeIcon(bool on) {
 std::wstring tooltip() {
     std::wstring t = L"懒猫设备接力";
     if (!g.hubConnected) t += L"\n未连接";
+    else if (g.deviceReady && !g.deviceEnabled) t += L"\n客户端已关闭，可远程开启";
+    else if (!g.inputEnabled) t += L"\n全部设备接力已暂停";
     else if (!g.sharingEnabled) t += L"\n键鼠共享已暂停";
     else if (g.captured || g.controlled) t += g.captured ? L"\n正在控制其他设备" : L"\n正在被控制";
     else {
@@ -81,7 +83,7 @@ void add(HWND owner) {
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_APP_TRAY;
-    nid.hIcon = g.hubConnected && g.sharingEnabled ? iconOn : iconOff;
+    nid.hIcon = g.operational() && g.sharingEnabled && g.inputEnabled ? iconOn : iconOff;
     wcsncpy(nid.szTip, tooltip().c_str(), 127);
     added = Shell_NotifyIconW(NIM_ADD, &nid);
     if (!added) logLine(fmt(L"托盘图标添加失败（%lu），资源管理器启动后会自动重试", GetLastError()));
@@ -97,7 +99,7 @@ void remove() {
 void refresh() {
     if (!added) return;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-    nid.hIcon = g.hubConnected && g.sharingEnabled ? iconOn : iconOff;
+    nid.hIcon = g.operational() && g.sharingEnabled && g.inputEnabled ? iconOn : iconOff;
     wcsncpy(nid.szTip, tooltip().c_str(), 127);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -120,6 +122,8 @@ void showMenu(HWND owner) {
     // First line: connection status only; the control line below covers control state.
     std::wstring status;
     if (!g.hubConnected) status = L"未连接";
+    else if (g.deviceReady && !g.deviceEnabled) status = L"客户端已关闭 · 保留远程唤醒连接";
+    else if (!g.inputEnabled) status = L"已连接 · 全部设备接力已暂停";
     else if (!g.sharingEnabled) status = L"已连接 · 键鼠共享已暂停";
     else {
         int online = 0;
@@ -133,8 +137,9 @@ void showMenu(HWND owner) {
         AppendMenuW(m, MF_STRING | MF_GRAYED, 0, (g.captured ? L"正在控制 " + who : who + L" 正在控制本机").c_str());
     }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (g.sharingEnabled ? MF_CHECKED : 0), ID_TRAY_SHARING, L"键鼠共享");
-    AppendMenuW(m, MF_STRING | (g.clipboardEnabled ? MF_CHECKED : 0) | (g.hubConnected ? 0 : MF_GRAYED), ID_TRAY_CLIPBOARD, L"共享剪贴板");
+    AppendMenuW(m, MF_STRING | (g.deviceEnabled ? MF_CHECKED : 0) | (g.hubConnected && g.deviceControl ? 0 : MF_GRAYED), ID_TRAY_CLIENT, L"客户端运行");
+    AppendMenuW(m, MF_STRING | (g.sharingEnabled ? MF_CHECKED : 0) | (g.operational() ? 0 : MF_GRAYED), ID_TRAY_SHARING, L"键鼠共享");
+    AppendMenuW(m, MF_STRING | (g.clipboardEnabled ? MF_CHECKED : 0) | (g.operational() ? 0 : MF_GRAYED), ID_TRAY_CLIPBOARD, L"共享剪贴板");
     AppendMenuW(m, MF_STRING | (autostart::enabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART, L"开机自动启动");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_TRAY_SHOW, L"打开主窗口");

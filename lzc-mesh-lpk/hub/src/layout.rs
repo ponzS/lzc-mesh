@@ -116,7 +116,7 @@ mod tests {
     use crate::protocol::Platform;
 
     fn dev(id: &str, x: f64, y: f64, w: f64, h: f64) -> Device {
-        Device { id: id.into(), name: id.into(), platform: Platform::Linux, w, h, x, y, version: String::new() }
+        Device { id: id.into(), name: id.into(), platform: Platform::Linux, w, h, x, y, version: String::new(), enabled: true }
     }
 
     #[test]

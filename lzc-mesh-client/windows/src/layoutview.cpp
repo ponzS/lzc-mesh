@@ -94,7 +94,7 @@ void paint(HWND h) {
             InflateRect(&t2, -S(6), 0);
             ui::drawText(dc, title, t1, compact ? ui::F.small : ui::F.bodyBold, d.online ? ui::TEXT : ui::MUTED, DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             ui::drawText(dc, meta, t2, ui::F.small, ui::MUTED, DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-            const wchar_t *role = d.id == g.activeTarget ? L"受控中" : d.id == g.activeSource ? L"控制中" : d.online && !d.sharing ? L"已暂停" : !d.online ? L"离线" : me ? L"本机" : L"";
+            const wchar_t *role = !d.enabled ? L"已关闭" : d.id == g.activeTarget ? L"受控中" : d.id == g.activeSource ? L"控制中" : d.online && !d.sharing ? L"已暂停" : !d.online ? L"离线" : me ? L"本机" : L"";
             if (*role) {
                 RECT rr{r.left, r.top + S(4), r.right - S(8), r.top + S(22)};
                 ui::drawText(dc, role, rr, ui::F.small, active ? ui::TEXT : ui::MUTED, DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);

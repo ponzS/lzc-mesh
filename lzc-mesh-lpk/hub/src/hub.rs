@@ -6,11 +6,13 @@ use std::collections::{HashMap, HashSet};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 
 use crate::layout;
 use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, FileView, HubMsg, Platform, DirectPeer, TransportMode};
 use crate::store::{Device, Snapshot, Store};
+#[path = "device_auth.rs"]
+mod device_auth;
 
 pub type Tx = mpsc::UnboundedSender<HubMsg>;
 
@@ -27,6 +29,11 @@ const KEY_RIGHTMETA: u32 = 126;
 struct Conn {
     /// Device id, or None for a layout viewer (web page).
     device: Option<String>,
+    manager: bool,
+    native: bool,
+    verified_key: Option<String>,
+    challenge: Option<device_auth::Challenge>,
+    file_token: Option<String>,
     tx: Tx,
     /// Keyboard/mouse sharing switched on in the client (tray switch).
     sharing: bool,
@@ -55,6 +62,7 @@ pub struct Room {
     snapshot: Snapshot,
     conns: HashMap<u64, Conn>,
     active: Option<Active>,
+    device_watches: HashMap<String, watch::Sender<bool>>,
 }
 
 #[derive(Clone)]
@@ -79,6 +87,7 @@ impl Hub {
                     snapshot: self.store.load(user),
                     conns: HashMap::new(),
                     active: None,
+                    device_watches: HashMap::new(),
                 }))
             })
             .clone()
@@ -91,8 +100,8 @@ fn norm(d: &Device, x: f64, y: f64) -> (f64, f64) {
 
 impl Room {
     pub fn attach(&mut self, conn: u64, tx: Tx) {
-        let _ = tx.send(HubMsg::Welcome { id: String::new(), user: self.user.clone() });
-        self.conns.insert(conn, Conn { device: None, tx, sharing: true, direct: None, transport_status: String::new(), channel_status: HashMap::new() });
+        let _ = tx.send(HubMsg::Welcome { id: String::new(), user: self.user.clone(), auth_version: 1 });
+        self.conns.insert(conn, Conn { device: None, manager: false, native: false, verified_key: None, challenge: None, file_token: None, tx, sharing: true, direct: None, transport_status: String::new(), channel_status: HashMap::new() });
         self.broadcast();
     }
 
@@ -102,6 +111,7 @@ impl Room {
             if !self.is_online(&id) {
                 self.drop_device_from_active(&id);
             }
+            self.update_lease(&id);
         }
         self.broadcast();
         self.broadcast_peers();
@@ -112,7 +122,7 @@ impl Room {
     }
 
     fn send_to(&self, id: &str, msg: HubMsg) {
-        for c in self.conns.values().filter(|c| c.device.as_deref() == Some(id)) {
+        for c in self.conns.values().filter(|c| c.device.as_deref() == Some(id) && self.trusted_conn(c)) {
             let _ = c.tx.send(msg.clone());
         }
     }
@@ -125,11 +135,48 @@ impl Room {
 
     pub fn handle(&mut self, conn: u64, msg: ClientMsg) {
         let device = self.conns.get(&conn).and_then(|c| c.device.clone());
+        let registration = matches!(&msg,ClientMsg::Hello{..}|ClientMsg::DeviceHello{..}|ClientMsg::DeviceProof{..}|ClientMsg::Ping);
+        let own_preference = matches!(&msg,ClientMsg::Sharing{..}) && device.is_some()
+            || matches!(&msg,ClientMsg::DeviceEnabled{id,..} if Some(id)==device.as_ref());
+        if !registration && !own_preference && !self.manager_or_trusted(conn) {
+            self.reply(conn,HubMsg::Error{message:"approved device or account management required".into()});return;
+        }
         match msg {
-            ClientMsg::Hello { id, name, platform, w, h, version } => self.hello(conn, id, name, platform, w, h, version),
+            ClientMsg::Hello { id, name, platform, w, h, version } => {
+                if platform!=Platform::Web && device.as_deref()==Some(&id) && self.conns.get(&conn).is_some_and(|c|c.verified_key.is_some()) {
+                    self.hello(conn,id,name,platform,w,h,version);self.broadcast();
+                } else if platform==Platform::Web && self.conns.get(&conn).is_some_and(|c|!c.native && c.device.is_none()) {
+                    if let Some(c)=self.conns.get_mut(&conn){c.manager=true;}
+                    self.broadcast();
+                } else {
+                    if platform!=Platform::Web {if let Some(c)=self.conns.get_mut(&conn){c.native=true;}}
+                    self.reply(conn,HubMsg::Error{message:"device credentials required; upgrade this client".into()});
+                }
+            }
+            ClientMsg::DeviceHello{id,name,platform,w,h,version,public_key} => self.device_hello(conn,id,name,platform,w,h,version,public_key),
+            ClientMsg::DeviceProof{signature} => self.device_proof(conn,signature),
+            ClientMsg::DeviceTrust{id,fingerprint,approved} => self.device_trust(conn,id,fingerprint,approved),
             ClientMsg::Ping => self.reply(conn, HubMsg::Pong),
             ClientMsg::Layout { id, x, y } => self.move_device(&id, x, y),
             ClientMsg::Forget { id } => self.forget(conn, &id),
+            ClientMsg::DeviceEnabled { id, enabled } => {
+                let Some(d) = self.snapshot.devices.get_mut(&id) else {
+                    self.reply(conn, HubMsg::Error { message: "unknown device in this account".into() });
+                    return;
+                };
+                if d.enabled != enabled {
+                    d.enabled = enabled;
+                    self.update_lease(&id);
+                    self.drop_device_from_active(&id);
+                    for c in self.conns.values_mut().filter(|c| c.device.as_deref() == Some(&id)) {
+                        c.direct = None;
+                        c.transport_status.clear(); c.channel_status.clear();
+                    }
+                    self.store.save(&self.user, &self.snapshot);
+                    self.broadcast_peers();
+                }
+                self.broadcast();
+            }
             ClientMsg::Sharing { enabled } => {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.sharing = enabled;
@@ -160,6 +207,7 @@ impl Room {
                     v.to_string().len()<512 && (v["role"]=="connector" || (v["role"]=="listener" && v["channel"].as_u64().is_some_and(|n|(1..=30).contains(&n)) && v["address"].as_str().is_some_and(|s|s.len()==17 && s.split(':').count()==6 && s.split(':').all(|p|p.len()==2 && u8::from_str_radix(p,16).is_ok()))))
                 });
                 if let Some(id) = device {
+                    if !self.device_enabled(&id) { return; }
                     let addresses = addresses.into_iter().filter(|s| {
                         s.parse::<std::net::SocketAddr>().is_ok_and(|addr| matches!(addr.ip(), std::net::IpAddr::V4(ip) if ip.is_private()) && addr.port() > 0)
                     }).collect();
@@ -216,20 +264,22 @@ impl Room {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn hello(&mut self, conn: u64, id: String, name: String, platform: Platform, w: f64, h: f64, version: String) {
+    fn hello(&mut self, conn: u64, id: String, name: String, platform: Platform, w: f64, h: f64, version: String) -> bool {
         if platform == Platform::Web || id.is_empty() {
-            return;
+            return false;
         }
         let valid = id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !valid || !(w.is_finite() && h.is_finite() && w >= 100.0 && h >= 100.0 && w < 100_000.0 && h < 100_000.0) {
             self.reply(conn, HubMsg::Error { message: "invalid device hello".into() });
-            return;
+            return false;
         }
+        let previous=self.snapshot.clone();
         let name: String = name.chars().take(64).collect();
         let existing = self.snapshot.devices.get(&id).map(|d| (d.x, d.y));
         let (x, y) = existing.unwrap_or_else(|| layout::place_new(&self.snapshot.devices));
         let resized = self.snapshot.devices.get(&id).is_some_and(|d| d.w != w || d.h != h);
-        self.snapshot.devices.insert(id.clone(), Device { id: id.clone(), name, platform, w, h, x, y, version });
+        let enabled = self.snapshot.devices.get(&id).is_none_or(|d| d.enabled);
+        self.snapshot.devices.insert(id.clone(), Device { id: id.clone(), name, platform, w, h, x, y, version, enabled });
         if resized {
             // Keep the layout valid after a resolution change.
             let (sx, sy) = layout::snap(&self.snapshot.devices, &id, x, y);
@@ -237,14 +287,27 @@ impl Room {
                 (d.x, d.y) = (sx, sy);
             }
         }
-        self.store.save(&self.user, &self.snapshot);
-        // A reconnecting device must not stay captured or controlled.
+        if !self.store.save(&self.user, &self.snapshot) {
+            self.snapshot=previous;
+            self.reply(conn,HubMsg::Error{message:"cannot persist device identity".into()});return false;
+        }
+        // Only a proved matching key reaches this method. Retire an older
+        // connection so a reconnect cannot duplicate input or keep old tokens.
+        let fingerprint=self.auth_status(&id).1;
+        for (n,c) in &mut self.conns {
+            if *n!=conn && c.device.as_deref()==Some(&id) {
+                let _=c.tx.send(HubMsg::DeviceAuth{status:"replaced".into(),fingerprint:fingerprint.clone(),token:None});
+                c.device=None;c.verified_key=None;c.file_token=None;c.direct=None;
+                c.transport_status.clear();c.channel_status.clear();
+            }
+        }
         self.drop_device_from_active(&id);
         if let Some(c) = self.conns.get_mut(&conn) {
             c.device = Some(id.clone());
-            let _ = c.tx.send(HubMsg::Welcome { id, user: self.user.clone() });
+            let _ = c.tx.send(HubMsg::Welcome { id, user: self.user.clone(), auth_version: 1 });
         }
-        self.broadcast();
+        // Registration publishes state only after the connection token is issued.
+        true
     }
 
     fn move_device(&mut self, id: &str, x: f64, y: f64) {
@@ -266,19 +329,21 @@ impl Room {
             return;
         }
         self.snapshot.devices.remove(id);
+        self.snapshot.bindings.remove(id);
+        self.device_watches.remove(id);
         self.store.save(&self.user, &self.snapshot);
         self.broadcast();
     }
 
     /// Relays clipboard text to the account's other online devices. Never stored.
     fn clipboard(&self, from: &str, text: String) {
-        if !self.snapshot.settings.clipboard || text.is_empty() || text.len() > MAX_CLIPBOARD_BYTES {
+        if !self.device_enabled(from) || !self.snapshot.settings.clipboard || text.is_empty() || text.len() > MAX_CLIPBOARD_BYTES {
             return;
         }
         let name = self.snapshot.devices.get(from).map(|d| d.name.clone()).unwrap_or_default();
         let msg = HubMsg::Clipboard { text, from: name };
         for c in self.conns.values() {
-            if c.device.as_deref().is_some_and(|id| id != from) {
+            if self.trusted_conn(c) && c.device.as_deref().is_some_and(|id| id != from && self.device_enabled(id)) {
                 let _ = c.tx.send(msg.clone());
             }
         }
@@ -287,9 +352,19 @@ impl Room {
     /// Pushes the shared file list to every connection (devices and pages).
     pub fn files_changed(&self, files: Vec<FileView>) {
         let msg = HubMsg::Files { files };
-        for c in self.conns.values() {
+        for c in self.conns.values().filter(|c| c.manager || (self.trusted_conn(c) && c.device.as_deref().is_some_and(|id| self.device_enabled(id)))) {
             let _ = c.tx.send(msg.clone());
         }
+    }
+
+    pub fn device_enabled(&self, id: &str) -> bool {
+        self.snapshot.devices.get(id).is_some_and(|d| d.enabled) && self.snapshot.bindings.get(id).is_some_and(|b|b.approved)
+    }
+
+    pub fn device_watch(&mut self, id: &str) -> Option<watch::Receiver<bool>> {
+        self.snapshot.devices.get(id)?;
+        let enabled = self.device_enabled(id);
+        Some(self.device_watches.entry(id.to_string()).or_insert_with(|| watch::channel(enabled).0).subscribe())
     }
 
     /// Devices that are online and take part in keyboard/mouse sharing.
@@ -300,7 +375,7 @@ impl Room {
 
     fn sharing_ids(&self) -> HashSet<&str> {
         // A device is paused only when all of its connections have sharing off.
-        self.conns.values().filter(|c| c.sharing).filter_map(|c| c.device.as_deref()).collect()
+        self.conns.values().filter(|c| c.sharing && c.device.as_deref().is_some_and(|id| self.device_enabled(id))).filter_map(|c| c.device.as_deref()).collect()
     }
 
     fn broadcast(&self) {
@@ -320,12 +395,24 @@ impl Room {
                 y: d.y,
                 online: online.contains(d.id.as_str()),
                 sharing: sharing.contains(d.id.as_str()),
+                enabled: d.enabled,
+                trusted: self.snapshot.bindings.get(&d.id).is_some_and(|b|b.approved),
+                fingerprint: self.auth_status(&d.id).1,
+                approval_status: self.auth_status(&d.id).0.into(),
                 version: d.version.clone(),
             })
             .collect();
         let active = self.active.as_ref().map(|a| ActiveView { source: a.source.clone(), target: a.target.clone() });
-        let state = HubMsg::State { devices, active, settings: self.snapshot.settings.clone() };
+        let state = HubMsg::State { devices: devices.clone(), active, settings: self.snapshot.settings.clone() };
         for c in self.conns.values() {
+            if !c.manager && !self.trusted_conn(c) {
+                if let Some(id)=&c.device {
+                    let own=devices.iter().filter(|d|d.id==*id).cloned().collect();
+                    let _=c.tx.send(HubMsg::State{devices:own,active:None,settings:self.snapshot.settings.clone()});
+                    let _=c.tx.send(HubMsg::Edges{left:false,right:false,up:false,down:false});
+                }
+                continue;
+            }
             let _ = c.tx.send(state.clone());
             for peer in self.conns.values() {
                 if let Some(id) = &peer.device {
@@ -406,13 +493,15 @@ impl Room {
     }
 
     fn direct_broadcast(&self, msg: HubMsg) {
-        for c in self.conns.values().filter(|c| c.direct.is_some()) { let _ = c.tx.send(msg.clone()); }
+        for c in self.conns.values().filter(|c| c.direct.is_some() && self.trusted_conn(c)) { let _ = c.tx.send(msg.clone()); }
     }
 
     fn broadcast_peers(&self) {
         let mut map = HashMap::new();
         for c in self.conns.values() {
-            if let Some(peer) = &c.direct { map.insert(peer.id.clone(), peer.clone()); }
+            if self.trusted_conn(c) && c.device.as_deref().is_some_and(|id|self.device_enabled(id)) {
+                if let Some(peer) = &c.direct { map.insert(peer.id.clone(), peer.clone()); }
+            }
         }
         self.direct_broadcast(HubMsg::DirectPeers { peers: map.into_values().collect() });
     }
@@ -598,6 +687,13 @@ fn entry_point(d: &Device, dir: Dir, gx: f64, gy: f64) -> (f64, f64) {
 }
 
 #[cfg(test)]
+#[path = "device_tests.rs"]
+mod device_tests;
+#[cfg(test)]
+#[path = "trust_tests.rs"]
+mod trust_tests;
+
+#[cfg(test)]
 mod tests_support {
     pub use super::tests::{drain, hello, room};
 }
@@ -607,21 +703,34 @@ mod tests {
     use super::*;
 
     pub fn room() -> Room {
-        let dir = std::env::temp_dir().join(format!("lzc-mesh-test-{}", std::process::id()));
-        Room { user: "u".into(), store: Store::new(dir), snapshot: Snapshot::default(), conns: HashMap::new(), active: None }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("lzc-mesh-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let mut r=Room { user: "u".into(), store: Store::new(dir), snapshot: Snapshot::default(), conns: HashMap::new(), active: None, device_watches: HashMap::new() };
+        let (tx,_rx)=mpsc::unbounded_channel();r.attach(0,tx);
+        r.handle(0,ClientMsg::Hello{id:String::new(),name:String::new(),platform:Platform::Web,w:0.0,h:0.0,version:String::new()});
+        r
     }
 
     pub fn hello(r: &mut Room, conn: u64, id: &str, platform: Platform, w: f64, h: f64) -> mpsc::UnboundedReceiver<HubMsg> {
         let (tx, rx) = mpsc::unbounded_channel();
         r.attach(conn, tx);
-        r.handle(conn, ClientMsg::Hello { id: id.into(), name: id.into(), platform, w, h, version: String::new() });
+        use std::sync::{Mutex as StdMutex,OnceLock};
+        static KEYS:OnceLock<StdMutex<HashMap<String,String>>>=OnceLock::new();
+        let mut keys=KEYS.get_or_init(||StdMutex::new(HashMap::new())).lock().unwrap();
+        let stored=keys.entry(id.to_string()).or_insert_with(||crate::identity::DeviceIdentity::generate().unwrap().export()).clone();
+        drop(keys);
+        let key=crate::identity::DeviceIdentity::from_stored(&stored).unwrap();
+        r.handle(conn,ClientMsg::DeviceHello{id:id.into(),name:id.into(),platform,w,h,version:String::new(),public_key:key.public_key()});
+        let nonce=r.conns[&conn].challenge.as_ref().unwrap().nonce.clone();
+        r.handle(conn,ClientMsg::DeviceProof{signature:key.proof(&r.user,id,&nonce)});
+        r.handle(0,ClientMsg::DeviceTrust{id:id.into(),fingerprint:key.fingerprint(),approved:true});
         rx
     }
 
     pub fn drain(rx: &mut mpsc::UnboundedReceiver<HubMsg>) -> Vec<HubMsg> {
         let mut out = Vec::new();
         while let Ok(m) = rx.try_recv() {
-            if !matches!(m, HubMsg::State { .. } | HubMsg::Edges { .. } | HubMsg::Welcome { .. }) {
+            if !matches!(m, HubMsg::State { .. } | HubMsg::Edges { .. } | HubMsg::Welcome { .. } | HubMsg::DeviceChallenge { .. } | HubMsg::DeviceAuth { .. }) {
                 out.push(m);
             }
         }
@@ -744,7 +853,7 @@ mod clipboard_tests {
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
 
-        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None });
+        r.handle(0, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None });
         assert!(!r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
         r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
         assert_eq!(clip(&mut win), 0, "relayed while disabled");
@@ -815,7 +924,7 @@ mod direct_tests {
         r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
         let session=r.active.as_ref().unwrap().session.clone().unwrap();
         super::tests_support::drain(&mut mac);super::tests_support::drain(&mut linux);
-        r.handle(3,serde_json::from_value(json!({"t":"settings","input_enabled":false})).unwrap());
+        r.handle(0,serde_json::from_value(json!({"t":"settings","input_enabled":false})).unwrap());
         assert!(r.active.is_none());
         assert!(super::tests_support::drain(&mut linux).iter().any(|m|matches!(m,HubMsg::DirectEnd {session:s,..} if s==&session)));
         r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
@@ -825,7 +934,7 @@ mod direct_tests {
     #[test]
     fn direct_only_rejects_relay_packets_and_legacy_control() {
         let (mut r,mut mac,mut linux)=setup();
-        r.handle(3,serde_json::from_value(json!({"t":"settings","transport_mode":"direct"})).unwrap());
+        r.handle(0,serde_json::from_value(json!({"t":"settings","transport_mode":"direct"})).unwrap());
         r.handle(1,ClientMsg::Edge {dir:Dir::Right,pos:0.1});assert!(r.active.is_none());
         r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
         let session=r.active.as_ref().unwrap().session.clone().unwrap();

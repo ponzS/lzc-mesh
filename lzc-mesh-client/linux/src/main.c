@@ -5,12 +5,16 @@
 
 #include "app.h"
 #include "direct.h"
+#include "clipboard.h"
+#include "bluetooth.h"
+#include "files.h"
 #include "lzc.h"
 #include "net.h"
 #include "ui.h"
 #include "wl_input.h"
 #include "config.h"
 #include "tray.h"
+#include "identity.h"
 
 App app;
 static GtkApplication *gtk_app_ref;
@@ -28,7 +32,7 @@ void app_set_status(int which, StatusLevel level, const char *fmt, ...) {
     s->level = level;
     g_free(s->text);
     s->text = text;
-    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard", "transport", "pointer-channel", "keyboard-channel"};
+    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard", "transport", "pointer-channel", "keyboard-channel", "device-trust"};
     static const char *lv[] = {"..", "ok", "warn", "ERROR"};
     g_printerr("[status] %s %s: %s\n", names[which], lv[level], text);
     app_status_changed();
@@ -53,9 +57,13 @@ void app_log(const char *fmt, ...) {
 void app_status_changed(void) { ui_refresh_status(); tray_refresh(); }
 void app_devices_changed(void) { ui_refresh_layout(); tray_refresh(); }
 
-static const char *labels[S_COUNT] = {"懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板", "输入通道", "光标通道", "键盘通道"};
+static const char *labels[S_COUNT] = {"懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板", "输入通道", "光标通道", "键盘通道", "设备信任"};
 
 char *app_summary(StatusLevel *level) {
+    if(app.hub_connected && !app.auth_verified){*level=ST_WARN;return g_strdup("设备未获信任 · 共享停用");}
+    if (app.hub_connected && app.device_ready && !app.device_enabled) {
+        *level = ST_WARN; return g_strdup("客户端已关闭 · 可远程开启");
+    }
     if (app.hub_connected) {
         guint online = 0;
         for (guint i = 0; i < app.devices->len; i++) online += ((MeshDevice *)g_ptr_array_index(app.devices, i))->online;
@@ -88,7 +96,38 @@ char *app_control_line(void) {
     return NULL;
 }
 
+bool app_operational(void) { return app.hub_connected && app.device_ready && app.device_enabled && app.device_trusted && app.auth_verified; }
+
+void app_refresh_activity(void) {
+    static bool was;
+    bool on = app_operational();
+    if (!on) {
+        const char *status = app.device_ready && !app.device_enabled ? "客户端已关闭 · 仅保留远程唤醒连接" : "等待设备状态确认";
+        app_set_status(S_TRANSPORT, ST_UNKNOWN, "%s", status);
+        app_set_status(S_POINTER_CHANNEL, ST_UNKNOWN, "%s", status);
+        app_set_status(S_KEYBOARD_CHANNEL, ST_UNKNOWN, "%s", status);
+    }
+    if (was == on) return;
+    was = on;
+    if (!on) {
+        direct_shutdown();
+        bluetooth_stop();
+        wl_input_capture(false); wl_input_leave();
+        wl_input_set_edges(false, false, false, false);
+        app.captured = app.controlled = false;
+    }
+    if (on) direct_init();
+    wl_input_set_active(on);
+    files_set_active(on);
+    app_log(on ? "客户端已开启" : "客户端已休眠：共享功能已停止，保留远程唤醒连接");
+}
+
+void app_set_enabled(bool on) {
+    if (app.hub_connected && app.device_control) net_send_enabled(app.device_id, on);
+}
+
 void app_set_sharing(bool on) {
+    if (!app_operational()) return;
     if (on == app.sharing_enabled) return;
     app.sharing_enabled = on;
     config_save();
@@ -133,6 +172,7 @@ int main(int argc, char **argv) {
     app.devices = g_ptr_array_new();
     app.swap_cmd_ctrl = true;
     app.sharing_enabled = true;
+    app.device_enabled = true;
     config_load();
     // Started at login: run in the tray without opening the window. GApplication
     // would reject unknown options, so the flag is removed before g_application_run.
@@ -148,6 +188,7 @@ int main(int argc, char **argv) {
     int rc = g_application_run(G_APPLICATION(gtk_app), argc, argv);
     direct_shutdown();
     wl_input_shutdown();
+    identity_shutdown();
     g_object_unref(gtk_app);
     return rc;
 }
