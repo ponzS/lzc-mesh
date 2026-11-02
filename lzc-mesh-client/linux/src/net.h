@@ -8,7 +8,7 @@ void net_send_hello(void);
 void net_send_edge(const char *dir, double pos);
 void net_send_motion(double dx, double dy);
 void net_send_button(int button, bool down);
-void net_send_wheel(double dx, double dy);
+void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y);
 void net_send_key(uint32_t code, bool down);
 void net_send_release(void);
 void net_send_layout(const char *id, double x, double y);

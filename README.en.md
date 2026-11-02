@@ -62,7 +62,7 @@ Output goes to `lzc-mesh-lpk/dist/` and `lzc-mesh-client/dist/`. The macOS `buil
 
 ## Status
 
-macOS ↔ Windows has been verified on real hardware: cursor crossing, keyboard, key repeat, shared clipboard, file sharing and layout sync. The Linux client builds and connects to the hub; input injection, the clipboard and the files panel have not yet been verified on real hardware.
+macOS ↔ Windows has been verified on real hardware: cursor crossing, keyboard, key repeat, shared clipboard, file sharing and layout sync. Mac → Linux cursor crossing, continuous trackpad scrolling and momentum scrolling have also been verified on real hardware. Version 0.1.3 fixes scroll-source misclassification and lost scroll phases. Other Linux input paths, the clipboard and the files panel have not yet been fully verified on real hardware.
 
 ## License
 

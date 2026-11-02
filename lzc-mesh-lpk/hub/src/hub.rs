@@ -323,9 +323,9 @@ impl Room {
                         let target = a.target.clone();
                         self.send_to(&target, HubMsg::Button { button, down });
                     }
-                    ClientMsg::Wheel { dx, dy } => {
+                    ClientMsg::Wheel { scroll } => {
                         let target = self.active.as_ref().unwrap().target.clone();
-                        self.send_to(&target, HubMsg::Wheel { dx, dy });
+                        self.send_to(&target, HubMsg::Wheel { scroll });
                     }
                     ClientMsg::Key { code, down } => self.key(code, down),
                     _ => {}
@@ -544,6 +544,48 @@ mod escape_tests {
         let got = super::tests_support::drain(&mut win);
         assert!(got.iter().any(|m| matches!(m, HubMsg::Key { code: KEY_LEFTMETA, down: false })));
         assert!(super::tests_support::drain(&mut mac).iter().any(|m| matches!(m, HubMsg::Release { .. })));
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn scroll_metadata_and_zero_distance_end_reach_only_the_controlled_device() {
+        let mut r = super::tests_support::room();
+        let mut mac = super::tests_support::hello(&mut r, 1, "mac-scroll", Platform::Macos, 1470.0, 956.0);
+        let mut linux = super::tests_support::hello(&mut r, 2, "linux-scroll", Platform::Linux, 1920.0, 1080.0);
+        r.handle(2, ClientMsg::Layout { id: "linux-scroll".into(), x: 0.0, y: -1080.0 });
+        r.handle(1, ClientMsg::Edge { dir: Dir::Up, pos: 0.5 });
+        super::tests_support::drain(&mut mac);
+        super::tests_support::drain(&mut linux);
+        let frames = [
+            json!({"t":"wheel","dx":1.5,"dy":108.0,"source":"continuous","phase":"began"}),
+            json!({"t":"wheel","dx":120.0,"dy":120.0,"source":"continuous","phase":"changed"}),
+            json!({"t":"wheel","dx":0.0,"dy":0.0,"source":"continuous","phase":"ended","stop_x":true,"stop_y":true}),
+            json!({"t":"wheel","dx":0.0,"dy":6.0,"source":"continuous","momentum_phase":"changed"}),
+            json!({"t":"wheel","dx":0.0,"dy":0.0,"source":"continuous","momentum_phase":"ended","stop_x":true,"stop_y":true}),
+        ];
+        for frame in frames {
+            r.handle(1, serde_json::from_value(frame.clone()).unwrap());
+            let got = super::tests_support::drain(&mut linux);
+            assert_eq!(got.len(), 1);
+            assert_eq!(serde_json::to_value(&got[0]).unwrap(), frame);
+            assert!(super::tests_support::drain(&mut mac).is_empty());
+        }
+        // The receiving device cannot inject scrolls back into the controller.
+        r.handle(2, serde_json::from_value(json!({"t":"wheel","dx":0,"dy":120})).unwrap());
+        assert!(super::tests_support::drain(&mut mac).is_empty());
+    }
+
+    #[test]
+    fn legacy_scroll_keeps_its_wire_shape() {
+        let old = json!({"t":"wheel","dx":0.0,"dy":120.0});
+        let ClientMsg::Wheel { scroll } = serde_json::from_value(old.clone()).unwrap() else { panic!() };
+        assert!(scroll.source.is_none());
+        assert_eq!(serde_json::to_value(HubMsg::Wheel { scroll }).unwrap(), old);
     }
 }
 

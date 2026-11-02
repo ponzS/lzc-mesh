@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <glib-unix.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -94,6 +95,12 @@ static struct {
     double axis[2];
     int axis120[2];
     bool got120;
+    uint32_t axis_source;
+    bool axis_stop[2];
+
+    // Axes still scrolling on the receiving side, ended on leave/disconnect.
+    bool injected_axis[2];
+    uint32_t injected_source;
 
     guint watch;
     GHashTable *held_keys;   // keys pressed by remote on this machine
@@ -300,14 +307,18 @@ static void p_frame(void *d, struct wl_pointer *p) {
         // Protocol wheel: 1/120 notch, positive = away from the user (scroll up / left).
         double v = W.got120 ? -W.axis120[0] : -W.axis[0] * 12.0;
         double h = W.got120 ? -W.axis120[1] : -W.axis[1] * 12.0;
-        if (v != 0 || h != 0) net_send_wheel(h, v);
+        const char *source = W.axis_source == WL_POINTER_AXIS_SOURCE_FINGER ? "finger" :
+                             W.axis_source == WL_POINTER_AXIS_SOURCE_CONTINUOUS ? "continuous" : "wheel";
+        if (v != 0 || h != 0 || W.axis_stop[0] || W.axis_stop[1])
+            net_send_wheel(h, v, source, W.axis_stop[1], W.axis_stop[0]);
     }
     W.axis[0] = W.axis[1] = 0;
     W.axis120[0] = W.axis120[1] = 0;
     W.got120 = false;
+    W.axis_stop[0] = W.axis_stop[1] = false;
 }
-static void p_axis_source(void *d, struct wl_pointer *p, uint32_t s) {}
-static void p_axis_stop(void *d, struct wl_pointer *p, uint32_t t, uint32_t axis) {}
+static void p_axis_source(void *d, struct wl_pointer *p, uint32_t s) { W.axis_source = s; }
+static void p_axis_stop(void *d, struct wl_pointer *p, uint32_t t, uint32_t axis) { if (axis < 2) W.axis_stop[axis] = true; }
 static void p_axis_discrete(void *d, struct wl_pointer *p, uint32_t axis, int32_t v) {}
 static void p_axis_value120(void *d, struct wl_pointer *p, uint32_t axis, int32_t v) {
     if (axis < 2) W.axis120[axis] += v;
@@ -564,23 +575,41 @@ void wl_input_button(int button, bool down) {
     flush();
 }
 
-static void wheel_axis(uint32_t axis, double v120) {
+static void wheel_axis(uint32_t axis, double v120, uint32_t source) {
     if (v120 == 0) return;
     double value = -v120 / 12.0;  // 10 surface units per notch, positive = down/right
     double notches = -v120 / 120.0;
-    if (notches == (int)notches) {
-        zwlr_virtual_pointer_v1_axis_source(W.vpointer, WL_POINTER_AXIS_SOURCE_WHEEL);
+    if (source == WL_POINTER_AXIS_SOURCE_WHEEL && notches == trunc(notches) &&
+        notches >= INT32_MIN && notches <= INT32_MAX) {
         zwlr_virtual_pointer_v1_axis_discrete(W.vpointer, now_ms(), axis, wl_fixed_from_double(value), (int32_t)notches);
     } else {
-        zwlr_virtual_pointer_v1_axis_source(W.vpointer, WL_POINTER_AXIS_SOURCE_FINGER);
         zwlr_virtual_pointer_v1_axis(W.vpointer, now_ms(), axis, wl_fixed_from_double(value));
     }
+    W.injected_axis[axis] = true;
 }
 
-void wl_input_wheel(double dx, double dy) {
-    if (!W.vpointer) return;
-    wheel_axis(WL_POINTER_AXIS_VERTICAL_SCROLL, dy);
-    wheel_axis(WL_POINTER_AXIS_HORIZONTAL_SCROLL, dx);
+void wl_input_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y) {
+    if (!W.vpointer || !isfinite(dx) || !isfinite(dy)) return;
+    // Only legacy senders need inference. Never infer the type of a new stream
+    // from its distance: a trackpad can legitimately report an exact notch.
+    uint32_t kind = source && !strcmp(source, "finger") ? WL_POINTER_AXIS_SOURCE_FINGER :
+                    source && !strcmp(source, "continuous") ? WL_POINTER_AXIS_SOURCE_CONTINUOUS :
+                    source ? WL_POINTER_AXIS_SOURCE_WHEEL :
+                    ((dx / 120.0 == trunc(dx / 120.0)) && (dy / 120.0 == trunc(dy / 120.0)) ?
+                     WL_POINTER_AXIS_SOURCE_WHEEL : WL_POINTER_AXIS_SOURCE_FINGER);
+    W.injected_source = kind;
+    // One source for the entire diagonal frame (the Wayland protocol permits one).
+    zwlr_virtual_pointer_v1_axis_source(W.vpointer, kind);
+    wheel_axis(WL_POINTER_AXIS_VERTICAL_SCROLL, dy, kind);
+    wheel_axis(WL_POINTER_AXIS_HORIZONTAL_SCROLL, dx, kind);
+    if (stop_y && W.injected_axis[0]) {
+        zwlr_virtual_pointer_v1_axis_stop(W.vpointer, now_ms(), WL_POINTER_AXIS_VERTICAL_SCROLL);
+        W.injected_axis[0] = false;
+    }
+    if (stop_x && W.injected_axis[1]) {
+        zwlr_virtual_pointer_v1_axis_stop(W.vpointer, now_ms(), WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+        W.injected_axis[1] = false;
+    }
     zwlr_virtual_pointer_v1_frame(W.vpointer);
     flush();
 }
@@ -601,6 +630,14 @@ void wl_input_key(uint32_t code, bool down) {
 // Releases everything the remote side still holds so no key or button stays stuck.
 void wl_input_leave(void) {
     if (!W.held_keys) return;
+    if (W.vpointer && (W.injected_axis[0] || W.injected_axis[1])) {
+        zwlr_virtual_pointer_v1_axis_source(W.vpointer, W.injected_source);
+        for (uint32_t axis = 0; axis < 2; axis++) {
+            if (W.injected_axis[axis]) zwlr_virtual_pointer_v1_axis_stop(W.vpointer, now_ms(), axis);
+            W.injected_axis[axis] = false;
+        }
+        zwlr_virtual_pointer_v1_frame(W.vpointer);
+    }
     GList *keys = g_hash_table_get_keys(W.held_keys);
     for (GList *l = keys; l; l = l->next) wl_input_key(GPOINTER_TO_UINT(l->data), false);
     g_list_free(keys);

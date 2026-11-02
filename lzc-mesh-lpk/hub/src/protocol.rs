@@ -21,6 +21,43 @@ pub enum Dir {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollSource {
+    Wheel,
+    Finger,
+    /// The sending OS already supplies the complete stream, including inertia.
+    /// Receivers must not generate another fling on finger release.
+    Continuous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollPhase {
+    Began,
+    Changed,
+    Ended,
+    Cancelled,
+    MayBegin,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scroll {
+    /// Existing wire units: 1/120 notch, or 12 units per continuous point.
+    pub dx: f64,
+    pub dy: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ScrollSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ScrollPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub momentum_phase: Option<ScrollPhase>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_x: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_y: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -44,7 +81,7 @@ pub enum ClientMsg {
     Motion { dx: f64, dy: f64 },
     Button { button: u8, down: bool },
     /// Units of 1/120 notch; positive `dy` scrolls content towards the top.
-    Wheel { dx: f64, dy: f64 },
+    Wheel { #[serde(flatten)] scroll: Scroll },
     /// `code` is a Linux evdev key code; every client translates to and from it.
     Key { code: u32, down: bool },
     /// The controlling device gave up control (hotkey, lost event tap...).
@@ -133,7 +170,7 @@ pub enum HubMsg {
     Enter { x: f64, y: f64 },
     Move { x: f64, y: f64 },
     Button { button: u8, down: bool },
-    Wheel { dx: f64, dy: f64 },
+    Wheel { #[serde(flatten)] scroll: Scroll },
     /// `code` is a Linux evdev key code.
     Key { code: u32, down: bool },
     Leave,

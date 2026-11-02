@@ -12,5 +12,5 @@ void wl_input_enter(double nx, double ny);
 void wl_input_leave(void);
 void wl_input_move(double nx, double ny);
 void wl_input_button(int button, bool down);
-void wl_input_wheel(double dx, double dy);
+void wl_input_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y);
 void wl_input_key(uint32_t code, bool down);

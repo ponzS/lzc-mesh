@@ -167,7 +167,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         case "button":
             input.button(o["button"] as? Int ?? 1, down: o["down"] as? Bool ?? false)
         case "wheel":
-            input.wheel(o["dx"] as? Double ?? 0, o["dy"] as? Double ?? 0)
+            input.wheel(o["dx"] as? Double ?? 0, o["dy"] as? Double ?? 0,
+                        scrollSource: o["source"] as? String, phase: o["phase"] as? String,
+                        momentumPhase: o["momentum_phase"] as? String,
+                        stop: o["stop_x"] as? Bool == true || o["stop_y"] as? Bool == true)
         case "key":
             let code = UInt32(o["code"] as? Int ?? 0), down = o["down"] as? Bool ?? false
             s.log("收到按键 code=\(code) \(down ? "按下" : "抬起")")

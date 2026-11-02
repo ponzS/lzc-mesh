@@ -208,8 +208,11 @@ final class MacInput {
             let b = n == 2 ? 3 : n == 3 ? 4 : n == 4 ? 5 : 0
             if b > 0 { hub.send(["t": "button", "button": b, "down": type == .otherMouseDown]) }
         case .scrollWheel:
-            // Continuous (trackpad) deltas are in points; ~10 points per wheel notch.
+            // macOS supplies both finger motion and the subsequent momentum. Keep
+            // this one continuous stream; a receiver must not start a second fling.
             let continuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
+            let phase = event.getIntegerValueField(.scrollWheelEventScrollPhase)
+            let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
             let vy: Double, vx: Double
             if continuous {
                 vy = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1) * 12
@@ -218,7 +221,17 @@ final class MacInput {
                 vy = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * 120
                 vx = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis2)) * 120
             }
-            if vx != 0 || vy != 0 { hub.send(["t": "wheel", "dx": vx, "dy": vy]) }
+            if vx != 0 || vy != 0 || phase != 0 || momentum != 0 {
+                var message: [String: Any] = ["t": "wheel", "dx": vx, "dy": vy,
+                                               "source": continuous ? "continuous" : "wheel"]
+                if let name = Self.scrollPhase(phase) { message["phase"] = name }
+                if let name = Self.momentumPhase(momentum) { message["momentum_phase"] = name }
+                if phase & 12 != 0 || momentum == 3 {
+                    message["stop_x"] = true
+                    message["stop_y"] = true
+                }
+                hub.send(message)
+            }
         case .keyDown, .keyUp:
             if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 { return }
             let k = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
@@ -287,10 +300,43 @@ final class MacInput {
         post(e)
     }
 
-    func wheel(_ dx: Double, _ dy: Double) {
-        // Wire units are 1/120 notch; post pixel deltas so trackpad scrolling stays smooth.
-        let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                        wheel1: Int32((dy / 12).rounded()), wheel2: Int32((dx / 12).rounded()), wheel3: 0)
+    private static func scrollPhase(_ value: Int64) -> String? {
+        switch value {
+        case 1: return "began"
+        case 2: return "changed"
+        case 4: return "ended"
+        case 8: return "cancelled"
+        case 128: return "may_begin"
+        default: return nil
+        }
+    }
+
+    private static func momentumPhase(_ value: Int64) -> String? {
+        switch value {
+        case 1: return "began"
+        case 2: return "changed"
+        case 3: return "ended"
+        default: return nil
+        }
+    }
+
+    func wheel(_ dx: Double, _ dy: Double, scrollSource: String? = nil,
+               phase: String? = nil, momentumPhase: String? = nil, stop: Bool = false) {
+        // Old senders omit source; preserve their existing pixel-based behavior.
+        let wheel = scrollSource == "wheel"
+        let unit = wheel ? 120.0 : 12.0
+        let e = CGEvent(scrollWheelEvent2Source: source, units: wheel ? .line : .pixel, wheelCount: 2,
+                        wheel1: Int32(clamping: Int64((dy / unit).rounded())),
+                        wheel2: Int32(clamping: Int64((dx / unit).rounded())), wheel3: 0)
+        if !wheel {
+            // The constructor takes integers. These fields retain sub-point motion.
+            e?.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: dy / 12)
+            e?.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: dx / 12)
+            let phases: [String: Int64] = ["began": 1, "changed": 2, "ended": 4, "cancelled": 8, "may_begin": 128]
+            let momentum: [String: Int64] = ["began": 1, "changed": 2, "ended": 3]
+            e?.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase.flatMap { phases[$0] } ?? (stop ? 4 : 0))
+            e?.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentumPhase.flatMap { momentum[$0] } ?? 0)
+        }
         post(e)
     }
 

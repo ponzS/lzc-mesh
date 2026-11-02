@@ -59,7 +59,14 @@ void net_send_hello(void) {
 void net_send_edge(const char *dir, double pos) { JsonBuilder *b = msg("edge"); str(b, "dir", dir); num(b, "pos", pos); done(b); }
 void net_send_motion(double dx, double dy) { JsonBuilder *b = msg("motion"); num(b, "dx", dx); num(b, "dy", dy); done(b); }
 void net_send_button(int button, bool down) { JsonBuilder *b = msg("button"); num(b, "button", button); boolean(b, "down", down); done(b); }
-void net_send_wheel(double dx, double dy) { JsonBuilder *b = msg("wheel"); num(b, "dx", dx); num(b, "dy", dy); done(b); }
+void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y) {
+    JsonBuilder *b = msg("wheel");
+    num(b, "dx", dx); num(b, "dy", dy);
+    str(b, "source", source);
+    if (stop_x) boolean(b, "stop_x", true);
+    if (stop_y) boolean(b, "stop_y", true);
+    done(b);
+}
 void net_send_key(uint32_t code, bool down) { JsonBuilder *b = msg("key"); num(b, "code", code); boolean(b, "down", down); done(b); }
 void net_send_release(void) { done(msg("release")); }
 void net_send_layout(const char *id, double x, double y) { JsonBuilder *b = msg("layout"); str(b, "id", id); num(b, "x", x); num(b, "y", y); done(b); }
@@ -194,7 +201,11 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
     } else if (!strcmp(t, "button")) {
         wl_input_button((int)json_object_get_int_member_with_default(o, "button", 1), json_object_get_boolean_member_with_default(o, "down", false));
     } else if (!strcmp(t, "wheel")) {
-        wl_input_wheel(json_object_get_double_member_with_default(o, "dx", 0), json_object_get_double_member_with_default(o, "dy", 0));
+        wl_input_wheel(json_object_get_double_member_with_default(o, "dx", 0),
+                       json_object_get_double_member_with_default(o, "dy", 0),
+                       json_object_get_string_member_with_default(o, "source", NULL),
+                       json_object_get_boolean_member_with_default(o, "stop_x", false),
+                       json_object_get_boolean_member_with_default(o, "stop_y", false));
     } else if (!strcmp(t, "key")) {
         uint32_t code = (uint32_t)json_object_get_int_member_with_default(o, "code", 0);
         bool down = json_object_get_boolean_member_with_default(o, "down", false);

@@ -1,6 +1,6 @@
 [package]
 name = "lzc-mesh-hub"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "懒猫设备接力 (LZC Mesh) hub: layout, input relay, shared clipboard and files"
 license = "PolyForm-Noncommercial-1.0.0"
