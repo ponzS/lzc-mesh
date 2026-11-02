@@ -41,6 +41,19 @@ pub enum ScrollPhase {
     MayBegin,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectPeer {
+    pub id: String,
+    pub certificate: String,
+    pub addresses: Vec<String>,
+    #[serde(default)]
+    pub bluetooth: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportMode { #[default] Auto, Direct, Bluetooth, Relay }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scroll {
     /// Existing wire units: 1/120 notch, or 12 units per continuous point.
@@ -99,7 +112,19 @@ pub enum ClientMsg {
         swap_cmd_ctrl: Option<bool>,
         #[serde(default)]
         clipboard: Option<bool>,
+        #[serde(default)]
+        transport_mode: Option<TransportMode>,
+        #[serde(default)]
+        input_enabled: Option<bool>,
     },
+    DirectHello { version: u32, certificate: String, addresses: Vec<String>, #[serde(default)] bluetooth: Option<serde_json::Value> },
+    DirectBegin { dir: Dir, pos: f64 },
+    DirectAlive { session: String },
+    DirectRoute { session: String, target: String, x: f64, y: f64 },
+    DirectLegacy { session: String, target: String, x: f64, y: f64 },
+    DirectStop { session: String, #[serde(default)] warp: bool },
+    DirectRelay { to: String, data: serde_json::Value },
+    DirectStatus { status: String, #[serde(default)] channel: Option<String> },
     /// Local clipboard text changed on this device (sent only while sharing is enabled).
     Clipboard { text: String },
     Ping,
@@ -127,11 +152,15 @@ pub struct Settings {
     /// the layout page or from a client's tray menu.
     #[serde(default = "default_true")]
     pub clipboard: bool,
+    #[serde(default)]
+    pub transport_mode: TransportMode,
+    #[serde(default = "default_true")]
+    pub input_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { swap_cmd_ctrl: true, clipboard: true }
+        Self { swap_cmd_ctrl: true, clipboard: true, transport_mode: TransportMode::Auto, input_enabled: true }
     }
 }
 
@@ -179,5 +208,11 @@ pub enum HubMsg {
     /// The shared file list changed.
     Files { files: Vec<FileView> },
     Pong,
+    DirectPeers { peers: Vec<DirectPeer> },
+    DirectSession { session: String, source: String, target: String, x: f64, y: f64 },
+    DirectLease { session: String },
+    DirectEnd { session: String, warp: bool },
+    DirectRelay { from: String, data: serde_json::Value },
+    TransportStatus { id: String, status: String, #[serde(skip_serializing_if = "Option::is_none")] channel: Option<String> },
     Error { message: String },
 }

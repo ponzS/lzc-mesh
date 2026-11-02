@@ -22,6 +22,16 @@
 - 共享剪贴板默认开启，可在管理页面“设置”或客户端托盘菜单中关闭。只同步文本，最大 256 KB；中枢只在同一账号的在线设备间转发，不保存内容。密码管理器标记为隐私的内容不会同步。
 - 文件共享：在管理页面或任一客户端窗口上传，同一账号的所有设备都能下载。文件保存在微服的 `/lzcapp/var/files`，单个文件最大 4 GB。
 
+## 输入通道与急停
+
+管理页面与 Mac、Linux 0.2.0 本地客户端的“设置”可切换自动（局域网优先）、仅蓝牙、仅局域网直连或仅中枢转发，设置同步到同账号设备。局域网使用双向证书认证的 QUIC；蓝牙使用 RFCOMM 与双向 TLS 认证。光标和键盘分别显示状态和性能统计，但会共享底层链路。仅蓝牙和仅局域网不可达时停止控制，不会静默回退。仅中转关闭本应用的蓝牙服务、连接、UDP 监听和探测。旧客户端继续通过中枢使用。
+
+蓝牙为实验功能，采用 Mac 服务端与 Linux 连接端，需要先完成系统蓝牙配对。Mac 的蓝牙初始化仍有启动上下文相关的待核实项，详见[测试记录](spec-tests/bluetooth-deployment-2026-11-02.md)。微服中的 Omarchy 容器通过宿主机上的私有 Unix 套接字取得 RFCOMM 描述符，不经过 IP 转发。宿主机桥接只负责建立连接，启动后降权，不执行命令、不读文件、不注入输入；配置见 [蓝牙桥接说明](lzc-mesh-client/linux/BLUETOOTH.md)。
+
+“暂停全部设备接力”会结束账号下当前的键鼠控制、释放按键和按钮、关闭新版客户端的直连入口并禁止新控制；管理连接保留，恢复后再次跨屏即可控制。该设置与通道模式都会保存在中枢。
+
+直连不传屏幕画面，客户端以普通用户身份运行，但模拟键鼠仍可操作该用户的桌面和数据。认证和控制会话是安全边界，不能依赖“看不到画面”限制输入控制。户外使用时可选择仅中转，关闭局域网直连入口。
+
 ## 下载
 
 安装包在 [GitHub Releases](https://github.com/ponzS/lzc-mesh/releases)。每个平台都有安装包和压缩包，任选其一：
@@ -41,13 +51,13 @@ Windows 和 Linux 的安装都不需要管理员权限（Arch 包除外）。LPK
 # LPK（Linux x86_64，需要 Rust 的 x86_64-unknown-linux-musl target 和 lzc-cli）
 cd lzc-mesh-lpk && sh build.sh && lzc-cli project release
 
-# macOS（在 Mac 上，需要 Xcode 命令行工具）
+# macOS（在 Mac 上，需要 Xcode 命令行工具和 Rust 的 aarch64/x86_64-apple-darwin target）
 cd lzc-mesh-client/macos && ./build.sh
 
 # Windows（在 Linux 上用 zig 交叉编译，生成 setup.exe 和 zip）
 cd lzc-mesh-client/windows && ./build.sh
 
-# Linux（需要 gtk4、libsoup-3.0、json-glib、wayland-client、xkbcommon）
+# Linux（需要 Rust，以及 gtk4、libsoup-3.0、json-glib、wayland-client、xkbcommon）
 cd lzc-mesh-client/linux && make && make dist   # tar.gz
 cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 ```
@@ -56,11 +66,13 @@ cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 
 ## 权限
 
-- macOS：需要“辅助功能”和“输入监控”，客户端启动时会主动请求。
+- macOS：需要“辅助功能”和“输入监控”，客户端启动时会主动请求。蓝牙模式还需要系统蓝牙授权及配对。
 - Windows：普通权限即可；控制管理员权限的窗口时需要“以管理员身份运行”，客户端窗口会提示。
 - Linux：需要 Hyprland、Sway 等支持 wlroots 协议的 Wayland 合成器。
 
 ## 状态
+
+0.2.0 的接力与光标改进已获用户手动验收，反馈明显更顺滑。该反馈未逐项指定传输模式；蓝牙的自动诊断边界仍保留在测试记录中。
 
 macOS ↔ Windows 已真机验证光标跨屏、键盘、长按连发、共享剪贴板、文件共享和布局同步。Mac → Linux 已真机验证光标跨屏、触控板连续滚动和惯性滚动；0.1.3 修复了滚动类型误判及滚动阶段丢失。Linux 的其他输入、剪贴板和文件面板尚未完整真机验证。
 

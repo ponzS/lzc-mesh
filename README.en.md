@@ -22,6 +22,16 @@ Control several computers in front of you (macOS, Windows, Linux) with one keybo
 - The shared clipboard is on by default and can be turned off under "Settings" on the management page or from a client's tray menu. It syncs text only, up to 256 KB. The hub relays it between the account's online devices and never stores it. Content that password managers mark as concealed is never synced.
 - File sharing: upload from the management page or any client window, and every device of the same account can download it. Files are stored on the box in `/lzcapp/var/files`, up to 4 GB each.
 
+## Input transport and emergency pause
+
+The web page and macOS/Linux 0.2.0 native settings share Automatic (LAN preferred), Bluetooth only, LAN only, and Relay only modes. LAN uses mutually authenticated QUIC; Bluetooth uses RFCOMM with mutual TLS and the existing control grants. Bluetooth only and LAN only stop control when unavailable. Relay only closes Bluetooth services, connections and LAN UDP endpoints. Pointer and keyboard have separate logical status while sharing physical links. Older clients continue to use the hub.
+
+Bluetooth is experimental; Mac initialization still has launch-context issues to verify, documented in the [test report](spec-tests/bluetooth-deployment-2026-11-02.md). MicroServer containers obtain actual Bluetooth descriptors through a private host Unix socket; see [BLUETOOTH.md](lzc-mesh-client/linux/BLUETOOTH.md).
+
+Pause all device input revokes the account's current control session, releases held input, closes Bluetooth and LAN endpoints on upgraded clients, and prevents new control sessions. The management connection remains available for resuming. Transport mode and input enablement are persisted by the hub.
+
+Direct input does not transmit screenshots and runs as the logged-in user. Input control can still operate that user's applications and data; authentication and session authorization remain essential. Relay only disables the LAN input entry point when desired.
+
 ## Download
 
 Packages are on [GitHub Releases](https://github.com/ponzS/lzc-mesh/releases). Every platform has an installer and an archive; use either one.
@@ -61,6 +71,8 @@ Output goes to `lzc-mesh-lpk/dist/` and `lzc-mesh-client/dist/`. The macOS `buil
 - Linux: needs a Wayland compositor with the wlroots protocols, such as Hyprland or Sway.
 
 ## Status
+
+The user accepted the 0.2.0 input improvements and reported substantially smoother cursor control. This feedback did not identify each transport mode; the report retains the limits of automated Bluetooth verification.
 
 macOS ↔ Windows has been verified on real hardware: cursor crossing, keyboard, key repeat, shared clipboard, file sharing and layout sync. Mac → Linux cursor crossing, continuous trackpad scrolling and momentum scrolling have also been verified on real hardware. Version 0.1.3 fixes scroll-source misclassification and lost scroll phases. Other Linux input paths, the clipboard and the files panel have not yet been fully verified on real hardware.
 

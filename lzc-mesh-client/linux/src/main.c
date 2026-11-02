@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "direct.h"
 #include "lzc.h"
 #include "net.h"
 #include "ui.h"
@@ -27,7 +28,7 @@ void app_set_status(int which, StatusLevel level, const char *fmt, ...) {
     s->level = level;
     g_free(s->text);
     s->text = text;
-    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard"};
+    static const char *names[S_COUNT] = {"lzc-client", "lzc-network", "login", "service", "hub", "input", "control", "screen", "clipboard", "transport", "pointer-channel", "keyboard-channel"};
     static const char *lv[] = {"..", "ok", "warn", "ERROR"};
     g_printerr("[status] %s %s: %s\n", names[which], lv[level], text);
     app_status_changed();
@@ -52,7 +53,7 @@ void app_log(const char *fmt, ...) {
 void app_status_changed(void) { ui_refresh_status(); tray_refresh(); }
 void app_devices_changed(void) { ui_refresh_layout(); tray_refresh(); }
 
-static const char *labels[S_COUNT] = {"懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板"};
+static const char *labels[S_COUNT] = {"懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板", "输入通道", "光标通道", "键盘通道"};
 
 char *app_summary(StatusLevel *level) {
     if (app.hub_connected) {
@@ -120,6 +121,7 @@ static void activate(GtkApplication *gtk_app, gpointer data) {
     started = true;
     gtk_app_ref = gtk_app;
     ui_build(gtk_app);
+    direct_init();
     tray_start();
     wl_input_init();
     lzc_refresh();
@@ -144,6 +146,7 @@ int main(int argc, char **argv) {
     GtkApplication *gtk_app = gtk_application_new("cloud.lazycat.lzcmesh", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(gtk_app, "activate", G_CALLBACK(activate), NULL);
     int rc = g_application_run(G_APPLICATION(gtk_app), argc, argv);
+    direct_shutdown();
     wl_input_shutdown();
     g_object_unref(gtk_app);
     return rc;

@@ -21,7 +21,7 @@
 namespace {
 const wchar_t *kTitle = L"懒猫设备接力 安装";
 const wchar_t *kName = L"懒猫设备接力";
-const wchar_t *kVersion = L"0.1.2";
+const wchar_t *kVersion = L"0.2.0";
 const wchar_t *kExeName = L"LZC Mesh.exe";
 const wchar_t *kUninstallKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LZCMesh";
 bool silent = false;

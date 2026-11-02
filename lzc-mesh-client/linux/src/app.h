@@ -22,6 +22,9 @@ enum {
     S_CONTROL,      // current control role
     S_SCREEN,       // local screen geometry used in the layout
     S_CLIPBOARD,    // shared clipboard state
+    S_TRANSPORT,   // active LAN/relay path
+    S_POINTER_CHANNEL,
+    S_KEYBOARD_CHANNEL,
     S_COUNT
 };
 
@@ -54,6 +57,7 @@ typedef struct {
     GPtrArray *devices;  // MeshDevice*
     char *active_source, *active_target;
     bool swap_cmd_ctrl;
+    char *transport_mode;
     bool clipboard_enabled;
 
     // Local input role

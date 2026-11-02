@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "direct.h"
 #include "clipboard.h"
 #include "files.h"
 #include "lzc.h"
@@ -24,7 +25,7 @@ static void send_builder(JsonBuilder *b) {
     JsonNode *root = json_builder_get_root(b);
     json_generator_set_root(gen, root);
     char *text = json_generator_to_data(gen, NULL);
-    soup_websocket_connection_send_text(ws, text);
+    if (!direct_input(text)) soup_websocket_connection_send_text(ws, text);
     g_free(text);
     json_node_unref(root);
     g_object_unref(gen);
@@ -57,7 +58,10 @@ void net_send_hello(void) {
     if (!app.sharing_enabled) net_send_sharing(false);
 }
 void net_send_edge(const char *dir, double pos) { JsonBuilder *b = msg("edge"); str(b, "dir", dir); num(b, "pos", pos); done(b); }
-void net_send_motion(double dx, double dy) { JsonBuilder *b = msg("motion"); num(b, "dx", dx); num(b, "dy", dy); done(b); }
+void net_send_motion(double dx, double dy) {
+    uint64_t captured=direct_now_us();JsonBuilder *b=msg("motion");num(b,"dx",dx);num(b,"dy",dy);
+    json_builder_set_member_name(b,"_capture_us");json_builder_add_int_value(b,(gint64)captured);done(b);
+}
 void net_send_button(int button, bool down) { JsonBuilder *b = msg("button"); num(b, "button", button); boolean(b, "down", down); done(b); }
 void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y) {
     JsonBuilder *b = msg("wheel");
@@ -71,6 +75,7 @@ void net_send_key(uint32_t code, bool down) { JsonBuilder *b = msg("key"); num(b
 void net_send_release(void) { done(msg("release")); }
 void net_send_layout(const char *id, double x, double y) { JsonBuilder *b = msg("layout"); str(b, "id", id); num(b, "x", x); num(b, "y", y); done(b); }
 void net_send_forget(const char *id) { JsonBuilder *b = msg("forget"); str(b, "id", id); done(b); }
+void net_send_transport_mode(const char *mode) { JsonBuilder *b = msg("settings"); str(b, "transport_mode", mode); done(b); }
 void net_send_settings(bool swap) { JsonBuilder *b = msg("settings"); boolean(b, "swap_cmd_ctrl", swap); done(b); }
 void net_send_clipboard(const char *text) { JsonBuilder *b = msg("clipboard"); str(b, "text", text); done(b); }
 void net_send_sharing(bool on) { JsonBuilder *b = msg("sharing"); boolean(b, "enabled", on); done(b); }
@@ -134,6 +139,8 @@ static void on_state(JsonObject *o) {
     if (settings && JSON_NODE_HOLDS_OBJECT(settings)) {
         JsonObject *so = json_node_get_object(settings);
         app.swap_cmd_ctrl = json_object_get_boolean_member_with_default(so, "swap_cmd_ctrl", true);
+        g_free(app.transport_mode);
+        app.transport_mode = g_strdup(json_object_get_string_member_with_default(so, "transport_mode", "auto"));
         bool clip = json_object_get_boolean_member_with_default(so, "clipboard", true);
         if (clip != app.clipboard_enabled) app_log("共享剪贴板已%s", clip ? "开启" : "关闭");
         app.clipboard_enabled = clip;
@@ -146,20 +153,16 @@ static void on_state(JsonObject *o) {
     app_devices_changed();
 }
 
-static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpointer u) {
-    if (type != SOUP_WEBSOCKET_DATA_TEXT) return;
-    gsize len;
-    const char *text = g_bytes_get_data(data, &len);
-    JsonParser *p = json_parser_new();
-    if (!json_parser_load_from_data(p, text, (gssize)len, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(p))) {
-        g_object_unref(p);
-        return;
-    }
-    JsonObject *o = json_node_get_object(json_parser_get_root(p));
+void net_inject(JsonObject *o) {
     const char *t = json_object_get_string_member_with_default(o, "t", "");
     double x = json_object_get_double_member_with_default(o, "x", 0.5);
     double y = json_object_get_double_member_with_default(o, "y", 0.5);
-    if (!strcmp(t, "state")) on_state(o);
+    if (!strcmp(t, "direct_active")) {
+        g_free(app.active_source);g_free(app.active_target);
+        app.active_source=g_strdup(json_object_get_string_member_with_default(o,"source",""));
+        app.active_target=g_strdup(json_object_get_string_member_with_default(o,"target",""));
+        update_control_status();
+    } else if (!strcmp(t, "state")) on_state(o);
     else if (!strcmp(t, "welcome")) {
         const char *user = json_object_get_string_member_with_default(o, "user", "");
         g_free(app.hub_user);
@@ -193,6 +196,7 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
         update_control_status();
     } else if (!strcmp(t, "move")) {
         wl_input_move(x, y);
+        if (json_object_has_member(o,"_motion_trace")) direct_applied(json_object_get_object_member(o,"_motion_trace"));
         gint64 now = g_get_monotonic_time();
         if (now - last_motion_log > 2 * G_USEC_PER_SEC) {
             last_motion_log = now;
@@ -209,7 +213,6 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
     } else if (!strcmp(t, "key")) {
         uint32_t code = (uint32_t)json_object_get_int_member_with_default(o, "code", 0);
         bool down = json_object_get_boolean_member_with_default(o, "down", false);
-        app_log("收到按键 code=%u %s", code, down ? "按下" : "抬起");
         wl_input_key(code, down);
     } else if (!strcmp(t, "files")) {
         files_update(json_object_get_array_member(o, "files"));
@@ -219,6 +222,21 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
     } else if (!strcmp(t, "error")) {
         app_log("服务端错误：%s", json_object_get_string_member_with_default(o, "message", ""));
     }
+}
+
+static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpointer u) {
+    if (type != SOUP_WEBSOCKET_DATA_TEXT) return;
+    gsize len;
+    const char *text = g_bytes_get_data(data, &len);
+    JsonParser *p = json_parser_new();
+    if (!json_parser_load_from_data(p, text, (gssize)len, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(p))) {
+        g_object_unref(p);
+        return;
+    }
+    char *copy=g_strndup(text,len);
+    direct_hub(copy);
+    g_free(copy);
+    net_inject(json_node_get_object(json_parser_get_root(p)));
     g_object_unref(p);
 }
 
@@ -237,6 +255,7 @@ static void on_closed(SoupWebsocketConnection *c, gpointer u) {
     app.hub_connected = false;
     if (ping_timer) g_source_remove(ping_timer), ping_timer = 0;
     app_set_status(S_HUB, ST_WARN, "连接已断开，稍后自动重连");
+    direct_disconnect();
     reset_roles();
 }
 
@@ -265,6 +284,7 @@ static void on_connected(GObject *src, GAsyncResult *res, gpointer u) {
     app_set_status(S_HUB, ST_OK, "已连接");
     app_log("已连接设备接力中枢");
     net_send_hello();
+    direct_hub("{\"t\":\"hub_connected\"}");
     ping_timer = g_timeout_add_seconds(20, ping, NULL);
 }
 
@@ -285,4 +305,8 @@ void net_connect(void) {
 
 void net_disconnect(void) {
     if (ws) soup_websocket_connection_close(ws, SOUP_WEBSOCKET_CLOSE_NORMAL, NULL);
+}
+
+void net_send_raw(const char *text) {
+    if (ws && soup_websocket_connection_get_state(ws)==SOUP_WEBSOCKET_STATE_OPEN) soup_websocket_connection_send_text(ws,text);
 }

@@ -7,6 +7,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     private(set) var connecting = false
     private var pingTimer: Timer?
     private var lastMoveLog = Date.distantPast
+    private lazy var direct = DirectTransport(hub: self)
     var input: MacInput!
     var clipboard: Clipboard!
     var onCookieRejected: (() -> Void)?
@@ -44,6 +45,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         s.set(.hub, .ok, "已连接")
         s.log("已连接设备接力中枢")
         sendHello()
+        direct.received(["t": "hub_connected"])
         pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.send(["t": "ping"]) }
     }
 
@@ -64,6 +66,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         connecting = false
         pingTimer?.invalidate(); pingTimer = nil
         s.hubConnected = false
+        direct.disconnected()
         if wasConnected {
             s.log("与设备接力中枢的连接已断开：\(why)")
             s.set(.hub, .warn, "连接已断开，稍后自动重连")
@@ -86,6 +89,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             if case .success(let msg) = result {
                 if case .string(let text) = msg, let data = text.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    self.direct.received(obj)
                     self.handle(obj)
                 }
                 self.receive(t)
@@ -94,6 +98,11 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     }
 
     func send(_ obj: [String: Any]) {
+        if direct.input(obj) { return }
+        sendRaw(obj)
+    }
+
+    func sendRaw(_ obj: [String: Any]) {
         guard let t = task, AppState.shared.hubConnected,
               let data = try? JSONSerialization.data(withJSONObject: obj), let text = String(data: data, encoding: .utf8) else { return }
         t.send(.string(text)) { _ in }
@@ -106,7 +115,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         if !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
-    private func handle(_ o: [String: Any]) {
+    func handle(_ o: [String: Any]) {
         let s = AppState.shared
         let t = o["t"] as? String ?? ""
         let x = o["x"] as? Double ?? 0.5, y = o["y"] as? Double ?? 0.5
@@ -114,6 +123,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         case "welcome":
             s.hubUser = o["user"] as? String ?? ""
             if !(o["id"] as? String ?? "").isEmpty { s.log("已加入 \(s.hubUser) 的设备组") }
+        case "direct_active":
+            s.activeSource = (o["source"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            s.activeTarget = (o["target"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            s.updateControlStatus()
         case "state":
             s.devices = (o["devices"] as? [[String: Any]] ?? []).map {
                 MeshDevice(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "", platform: $0["platform"] as? String ?? "",
@@ -125,6 +138,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.activeSource = active?["source"] as? String
             s.activeTarget = active?["target"] as? String
             let settings = o["settings"] as? [String: Any]
+            s.transportMode = settings?["transport_mode"] as? String ?? "auto"
             s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
             let clip = settings?["clipboard"] as? Bool ?? true
             if clip != s.clipboardEnabled { s.log("共享剪贴板已\(clip ? "开启" : "关闭")") }
@@ -173,7 +187,6 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
                         stop: o["stop_x"] as? Bool == true || o["stop_y"] as? Bool == true)
         case "key":
             let code = UInt32(o["code"] as? Int ?? 0), down = o["down"] as? Bool ?? false
-            s.log("收到按键 code=\(code) \(down ? "按下" : "抬起")")
             input.key(code, down: down)
         case "clipboard":
             clipboard.set(o["text"] as? String ?? "", from: o["from"] as? String ?? "")

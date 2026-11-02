@@ -23,6 +23,7 @@
 #include "clipboard.h"
 #include "net.h"
 #include "wl_input.h"
+#include "pointer_coords.h"
 
 #include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
@@ -535,9 +536,9 @@ void wl_input_capture(bool on) {
 
 static void abs_move(double nx, double ny) {
     if (!W.vpointer || app.screen_w <= 0) return;
-    uint32_t w = (uint32_t)app.screen_w, h = (uint32_t)app.screen_h;
-    uint32_t x = (uint32_t)CLAMP(nx * w, 0, w - 1), y = (uint32_t)CLAMP(ny * h, 0, h - 1);
-    zwlr_virtual_pointer_v1_motion_absolute(W.vpointer, now_ms(), x, y, w, h);
+    PointerCoords point;
+    if (!pointer_coords(nx,ny,app.screen_w,app.screen_h,&point)) return;
+    zwlr_virtual_pointer_v1_motion_absolute(W.vpointer, now_ms(), point.x, point.y, point.width, point.height);
     zwlr_virtual_pointer_v1_frame(W.vpointer);
     flush();
 }

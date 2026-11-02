@@ -3,7 +3,7 @@ import AppKit
 enum Level { case unknown, ok, warn, error }
 
 enum StatusKey: Int, CaseIterable {
-    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen, clipboard
+    case lzcClient, lzcNetwork, login, service, hub, permission, control, screen, clipboard, transport, pointerChannel, keyboardChannel
     var label: String {
         switch self {
         case .lzcClient: return "懒猫微服客户端"
@@ -15,6 +15,9 @@ enum StatusKey: Int, CaseIterable {
         case .control: return "控制状态"
         case .screen: return "本机屏幕"
         case .clipboard: return "共享剪贴板"
+        case .transport: return "输入通道"
+        case .pointerChannel: return "光标通道"
+        case .keyboardChannel: return "键盘通道"
         }
     }
 }
@@ -29,7 +32,7 @@ struct MeshDevice {
 /// Main-thread state shared by all components.
 final class AppState {
     static let shared = AppState()
-    static let version = "0.1.3"
+    static let version = "0.2.0"
 
     var status: [StatusKey: (Level, String)] = Dictionary(uniqueKeysWithValues: StatusKey.allCases.map { ($0, (.unknown, "检测中…")) })
     var deviceID: String
@@ -42,6 +45,7 @@ final class AppState {
     var hubUser = ""
     var devices: [MeshDevice] = []
     var activeSource: String?, activeTarget: String?
+    var transportMode = "auto"
     var swapCmdCtrl = true
     var clipboardEnabled = false
     var files: [SharedFile] = []

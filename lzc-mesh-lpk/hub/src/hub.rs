@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::layout;
-use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, FileView, HubMsg, Platform};
+use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, FileView, HubMsg, Platform, DirectPeer, TransportMode};
 use crate::store::{Device, Snapshot, Store};
 
 pub type Tx = mpsc::UnboundedSender<HubMsg>;
@@ -30,6 +30,9 @@ struct Conn {
     tx: Tx,
     /// Keyboard/mouse sharing switched on in the client (tray switch).
     sharing: bool,
+    direct: Option<DirectPeer>,
+    transport_status: String,
+    channel_status: HashMap<String,String>,
 }
 
 struct Active {
@@ -43,6 +46,7 @@ struct Active {
     buttons: HashSet<u8>,
     /// Physical keys held on the controlling keyboard, before any remapping.
     src_keys: HashSet<u32>,
+    session: Option<String>,
 }
 
 pub struct Room {
@@ -88,7 +92,7 @@ fn norm(d: &Device, x: f64, y: f64) -> (f64, f64) {
 impl Room {
     pub fn attach(&mut self, conn: u64, tx: Tx) {
         let _ = tx.send(HubMsg::Welcome { id: String::new(), user: self.user.clone() });
-        self.conns.insert(conn, Conn { device: None, tx, sharing: true });
+        self.conns.insert(conn, Conn { device: None, tx, sharing: true, direct: None, transport_status: String::new(), channel_status: HashMap::new() });
         self.broadcast();
     }
 
@@ -100,6 +104,7 @@ impl Room {
             }
         }
         self.broadcast();
+        self.broadcast_peers();
     }
 
     fn is_online(&self, id: &str) -> bool {
@@ -134,15 +139,68 @@ impl Room {
                 }
                 self.broadcast();
             }
-            ClientMsg::Settings { swap_cmd_ctrl, clipboard } => {
+            ClientMsg::Settings { swap_cmd_ctrl, clipboard, transport_mode, input_enabled } => {
                 if let Some(v) = swap_cmd_ctrl {
                     self.snapshot.settings.swap_cmd_ctrl = v;
                 }
                 if let Some(v) = clipboard {
                     self.snapshot.settings.clipboard = v;
                 }
+                if let Some(v) = transport_mode { self.snapshot.settings.transport_mode = v; }
+                if let Some(v) = input_enabled {
+                    self.snapshot.settings.input_enabled = v;
+                    if !v { self.stop(true); }
+                }
                 self.store.save(&self.user, &self.snapshot);
                 self.broadcast();
+            }
+            ClientMsg::DirectHello { version, certificate, addresses, bluetooth } => {
+                if version != 1 || certificate.len() > 16384 || addresses.len() > 16 { return; }
+                let bluetooth=bluetooth.filter(|v| {
+                    v.to_string().len()<512 && (v["role"]=="connector" || (v["role"]=="listener" && v["channel"].as_u64().is_some_and(|n|(1..=30).contains(&n)) && v["address"].as_str().is_some_and(|s|s.len()==17 && s.split(':').count()==6 && s.split(':').all(|p|p.len()==2 && u8::from_str_radix(p,16).is_ok()))))
+                });
+                if let Some(id) = device {
+                    let addresses = addresses.into_iter().filter(|s| {
+                        s.parse::<std::net::SocketAddr>().is_ok_and(|addr| matches!(addr.ip(), std::net::IpAddr::V4(ip) if ip.is_private()) && addr.port() > 0)
+                    }).collect();
+                    if let Some(c) = self.conns.get_mut(&conn) { c.direct = Some(DirectPeer { id, certificate, addresses, bluetooth }); }
+                    self.broadcast_peers();
+                }
+            }
+            ClientMsg::DirectBegin { dir, pos } => {
+                if let Some(id) = device {
+                    if self.conns.get(&conn).is_some_and(|c| c.direct.is_some()) { self.begin_direct(&id, dir, pos); }
+                }
+            }
+            ClientMsg::DirectAlive { session } => {
+                if let Some(id) = device {
+                    if self.active.as_ref().is_some_and(|a| a.source == id && a.session.as_deref() == Some(&session)) { self.direct_broadcast(HubMsg::DirectLease { session }); }
+                }
+            }
+            ClientMsg::DirectStop { session, warp } => {
+                if let Some(id) = device {
+                    if self.active.as_ref().is_some_and(|a| a.source == id && a.session.as_deref() == Some(&session)) { self.stop(warp); }
+                }
+            }
+            ClientMsg::DirectRoute { session, target, x, y } => {
+                if let Some(id) = device { self.direct_route(&id, &session, &target, x, y, false); }
+            }
+            ClientMsg::DirectLegacy { session, target, x, y } => {
+                if let Some(id) = device { self.direct_route(&id, &session, &target, x, y, true); }
+            }
+            ClientMsg::DirectRelay { to, data } => {
+                if let Some(id) = device { self.direct_relay(&id, &to, data); }
+            }
+            ClientMsg::DirectStatus { status, channel } => {
+                if channel.as_deref().is_some_and(|s|s!="pointer" && s!="keyboard"){return;}
+                if let Some(id) = device {
+                    let status: String = status.chars().take(120).collect();
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        if let Some(channel)=&channel {c.channel_status.insert(channel.clone(),status.clone());}
+                        else {c.transport_status=status.clone();}
+                    }
+                    for c in self.conns.values() { let _ = c.tx.send(HubMsg::TransportStatus { id: id.clone(), status: status.clone(), channel: channel.clone() }); }
+                }
             }
             ClientMsg::Clipboard { text } => {
                 if let Some(id) = device {
@@ -269,9 +327,15 @@ impl Room {
         let state = HubMsg::State { devices, active, settings: self.snapshot.settings.clone() };
         for c in self.conns.values() {
             let _ = c.tx.send(state.clone());
+            for peer in self.conns.values() {
+                if let Some(id) = &peer.device {
+                    if !peer.transport_status.is_empty() { let _ = c.tx.send(HubMsg::TransportStatus { id: id.clone(), status: peer.transport_status.clone(), channel: None }); }
+                    for (channel,status) in &peer.channel_status {let _=c.tx.send(HubMsg::TransportStatus {id:id.clone(),status:status.clone(),channel:Some(channel.clone())});}
+                }
+            }
             if let Some(id) = &c.device {
                 if let Some(me) = self.snapshot.devices.get(id) {
-                    let [left, right, up, down] = if c.sharing { layout::edges(self.online(), me) } else { [false; 4] };
+                    let [left, right, up, down] = if c.sharing && self.snapshot.settings.input_enabled { layout::edges(self.online(), me) } else { [false; 4] };
                     let _ = c.tx.send(HubMsg::Edges { left, right, up, down });
                 }
             }
@@ -288,6 +352,11 @@ impl Room {
     /// Ends remote control. `warp` returns the source cursor to its centre.
     fn stop(&mut self, warp: bool) {
         let Some(a) = self.active.take() else { return };
+        if let Some(session) = a.session.clone() {
+            self.direct_broadcast(HubMsg::DirectEnd { session, warp });
+            self.broadcast();
+            return;
+        }
         self.release_held(&a);
         self.send_to(&a.target, HubMsg::Leave);
         self.send_to(&a.source, HubMsg::Release { x: 0.5, y: 0.5, warp });
@@ -304,6 +373,8 @@ impl Room {
     }
 
     fn input(&mut self, from: &str, msg: ClientMsg) {
+        if !self.snapshot.settings.input_enabled { return; }
+        if matches!(self.snapshot.settings.transport_mode, TransportMode::Direct | TransportMode::Bluetooth) && !matches!(msg, ClientMsg::Release) { return; }
         match msg {
             ClientMsg::Edge { dir, pos } => self.edge(from, dir, pos),
             ClientMsg::Release => {
@@ -332,6 +403,66 @@ impl Room {
                 }
             }
         }
+    }
+
+    fn direct_broadcast(&self, msg: HubMsg) {
+        for c in self.conns.values().filter(|c| c.direct.is_some()) { let _ = c.tx.send(msg.clone()); }
+    }
+
+    fn broadcast_peers(&self) {
+        let mut map = HashMap::new();
+        for c in self.conns.values() {
+            if let Some(peer) = &c.direct { map.insert(peer.id.clone(), peer.clone()); }
+        }
+        self.direct_broadcast(HubMsg::DirectPeers { peers: map.into_values().collect() });
+    }
+
+    fn begin_direct(&mut self, from: &str, dir: Dir, pos: f64) {
+        if !self.snapshot.settings.input_enabled || self.active.is_some() || !self.sharing_ids().contains(from) || !pos.is_finite() { return; }
+        let Some(src) = self.snapshot.devices.get(from).cloned() else { return };
+        let pos = pos.clamp(0.0, 1.0);
+        let (gx, gy) = match dir {
+            Dir::Left => (src.x, src.y + pos * src.h), Dir::Right => (src.right(), src.y + pos * src.h),
+            Dir::Up => (src.x + pos * src.w, src.y), Dir::Down => (src.x + pos * src.w, src.bottom()),
+        };
+        let Some(target) = layout::neighbour(self.online(), &src, dir, gx, gy).cloned() else { return };
+        if !self.conns.values().any(|c| c.device.as_deref() == Some(&target.id) && c.direct.is_some()) { if !matches!(self.snapshot.settings.transport_mode, TransportMode::Direct | TransportMode::Bluetooth) { self.edge(from, dir, pos); } return; }
+        use std::io::Read;
+        let mut random = [0u8; 32];
+        if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut random)).is_err() { return; }
+        let session: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let (x, y) = entry_point(&target, dir, gx, gy);
+        self.active = Some(Active { source: from.into(), target: target.id.clone(), x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: HashSet::new(), session: Some(session.clone()) });
+        self.direct_broadcast(HubMsg::DirectSession { session, source: from.into(), target: target.id, x, y });
+        self.broadcast();
+    }
+
+    fn direct_route(&mut self, from: &str, session: &str, target: &str, x: f64, y: f64, legacy: bool) {
+        if !self.snapshot.settings.input_enabled || (legacy && matches!(self.snapshot.settings.transport_mode, TransportMode::Direct | TransportMode::Bluetooth)) || !x.is_finite() || !y.is_finite() || !self.sharing_ids().contains(target) { return; }
+        if !self.active.as_ref().is_some_and(|a| a.source == from && a.session.as_deref() == Some(session)) { return; }
+        let Some(d) = self.snapshot.devices.get(target).cloned() else { return };
+        let (x, y) = (x.clamp(d.x, d.right()-1.0), y.clamp(d.y, d.bottom()-1.0));
+        if legacy { self.direct_broadcast(HubMsg::DirectEnd { session: session.into(), warp: false }); }
+        let a = self.active.as_mut().unwrap();
+        a.target = target.into(); a.x = x; a.y = y;
+        if legacy {
+            a.session = None;
+            let (x, y) = norm(&d, x, y);
+            self.send_to(target, HubMsg::Enter { x, y });
+        }
+        self.broadcast();
+    }
+
+    fn direct_relay(&self, from: &str, to: &str, data: serde_json::Value) {
+        if !self.snapshot.settings.input_enabled || matches!(self.snapshot.settings.transport_mode, TransportMode::Direct | TransportMode::Bluetooth) || !self.is_online(to) || data.to_string().len() > 8192 { return; }
+        let Some(a) = &self.active else { return };
+        let Some(session) = &a.session else { return };
+        let allowed = match data["kind"].as_str() {
+            Some("input") => from == a.source && data["input"]["session"] == *session && data["input"]["source"] == from && data["input"]["target"] == to,
+            Some("ack" | "motion_ack") => to == a.source && data["session"] == *session && data["source"] == to && data["target"] == from,
+            _ => false,
+        };
+        if allowed { self.send_to(to, HubMsg::DirectRelay { from: from.into(), data }); }
     }
 
     fn platform(&self, id: &str) -> Option<Platform> {
@@ -367,7 +498,7 @@ impl Room {
     }
 
     fn edge(&mut self, from: &str, dir: Dir, pos: f64) {
-        if self.active.is_some() || !self.sharing_ids().contains(from) {
+        if !self.snapshot.settings.input_enabled || self.active.is_some() || !self.sharing_ids().contains(from) {
             return;
         }
         let Some(src) = self.snapshot.devices.get(from).cloned() else { return };
@@ -388,6 +519,7 @@ impl Room {
             keys: HashSet::new(),
             buttons: HashSet::new(),
             src_keys: HashSet::new(),
+            session: None,
         });
         let (nx, ny) = norm(&target, x, y);
         self.send_to(from, HubMsg::Capture);
@@ -441,7 +573,7 @@ impl Room {
             let (nx, ny) = norm(&next, x, y);
             self.send_to(&next.id, HubMsg::Enter { x: nx, y: ny });
             // Keys still held on the controlling keyboard are re-pressed on the new target lazily by the user.
-            self.active = Some(Active { source: a.source, target: next.id, x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: a.src_keys });
+            self.active = Some(Active { source: a.source, target: next.id, x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: a.src_keys, session: None });
         }
         self.broadcast();
     }
@@ -612,7 +744,7 @@ mod clipboard_tests {
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
 
-        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false) });
+        r.handle(3, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None });
         assert!(!r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
         r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
         assert_eq!(clip(&mut win), 0, "relayed while disabled");
@@ -643,5 +775,73 @@ mod sharing_tests {
         assert!(r.active.is_none());
         assert!(super::tests_support::drain(&mut win).iter().any(|m| matches!(m, HubMsg::Leave)));
         assert!(super::tests_support::drain(&mut mac).iter().any(|m| matches!(m, HubMsg::Release { .. })));
+    }
+}
+
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn setup() -> (Room, mpsc::UnboundedReceiver<HubMsg>, mpsc::UnboundedReceiver<HubMsg>) {
+        let mut r=super::tests_support::room();
+        let mac=super::tests_support::hello(&mut r,1,"mac-direct",Platform::Macos,1000.0,800.0);
+        let linux=super::tests_support::hello(&mut r,2,"linux-direct",Platform::Linux,1000.0,800.0);
+        r.handle(2,ClientMsg::Layout {id:"linux-direct".into(),x:1000.0,y:0.0});
+        for conn in [1,2] {r.handle(conn,ClientMsg::DirectHello {version:1,certificate:String::new(),addresses:vec![],bluetooth:None});}
+        (r,mac,linux)
+    }
+    fn data(session:&str) -> serde_json::Value {
+        json!({"kind":"input","input":{"session":session,"source":"mac-direct","target":"linux-direct","seq":1,"barrier":1,"x":1002.0,"y":80.0,"event":{"t":"key","code":30,"down":true}}})
+    }
+    #[test]
+    fn grant_and_relay_require_the_current_source_and_session() {
+        let (mut r,mut mac,mut linux)=setup();
+        r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
+        let session=r.active.as_ref().unwrap().session.clone().unwrap();
+        let initial=super::tests_support::drain(&mut mac);
+        assert!(initial.iter().any(|m|matches!(m,HubMsg::DirectSession {session:s,..} if s==&session)));
+        super::tests_support::drain(&mut linux);
+        r.handle(2,ClientMsg::DirectRelay {to:"linux-direct".into(),data:data(&session)});
+        r.handle(1,ClientMsg::DirectRelay {to:"linux-direct".into(),data:data("expired")});
+        assert!(super::tests_support::drain(&mut linux).is_empty());
+        r.handle(1,ClientMsg::DirectRelay {to:"linux-direct".into(),data:data(&session)});
+        assert!(super::tests_support::drain(&mut linux).iter().any(|m|matches!(m,HubMsg::DirectRelay {..})));
+    }
+    #[test]
+    fn global_pause_revokes_direct_grants_and_blocks_legacy_edges() {
+        let (mut r,mut mac,mut linux)=setup();
+        r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
+        let session=r.active.as_ref().unwrap().session.clone().unwrap();
+        super::tests_support::drain(&mut mac);super::tests_support::drain(&mut linux);
+        r.handle(3,serde_json::from_value(json!({"t":"settings","input_enabled":false})).unwrap());
+        assert!(r.active.is_none());
+        assert!(super::tests_support::drain(&mut linux).iter().any(|m|matches!(m,HubMsg::DirectEnd {session:s,..} if s==&session)));
+        r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
+        r.handle(1,ClientMsg::Edge {dir:Dir::Right,pos:0.1});
+        assert!(r.active.is_none());
+    }
+    #[test]
+    fn direct_only_rejects_relay_packets_and_legacy_control() {
+        let (mut r,mut mac,mut linux)=setup();
+        r.handle(3,serde_json::from_value(json!({"t":"settings","transport_mode":"direct"})).unwrap());
+        r.handle(1,ClientMsg::Edge {dir:Dir::Right,pos:0.1});assert!(r.active.is_none());
+        r.handle(1,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
+        let session=r.active.as_ref().unwrap().session.clone().unwrap();
+        super::tests_support::drain(&mut mac);super::tests_support::drain(&mut linux);
+        r.handle(1,ClientMsg::DirectRelay {to:"linux-direct".into(),data:data(&session)});
+        assert!(super::tests_support::drain(&mut linux).is_empty());
+    }
+    #[test]
+    fn viewer_cannot_publish_peer_certificates_or_inject_input() {
+        let (mut r,mut mac,mut linux)=setup();
+        let (tx,mut viewer)=mpsc::unbounded_channel();r.attach(3,tx);
+        while viewer.try_recv().is_ok(){}
+        r.handle(3,ClientMsg::DirectHello {version:1,certificate:"foreign".into(),addresses:vec!["192.168.1.2:45000".into()],bluetooth:None});
+        r.handle(3,ClientMsg::DirectBegin {dir:Dir::Right,pos:0.1});
+        assert!(r.active.is_none());assert!(r.conns[&3].direct.is_none());
+        assert!(!super::tests_support::drain(&mut mac).iter().any(|m|matches!(m,HubMsg::DirectPeers {peers} if peers.iter().any(|p|p.certificate=="foreign"))));
+        super::tests_support::drain(&mut linux);
     }
 }

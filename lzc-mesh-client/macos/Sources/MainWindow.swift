@@ -18,6 +18,9 @@ final class MainWindow: NSObject, NSWindowDelegate {
     private let swapSwitch = ToggleSwitch()
     private let autostartSwitch = ToggleSwitch()
     private let boxField = NSTextField()
+    private let transportPicker = NSPopUpButton()
+    private let transportModes = ["auto", "bluetooth", "direct", "relay"]
+    var selectedTransportMode: String { transportModes[max(0, transportPicker.indexOfSelectedItem)] }
     private let logView = NSTextView()
     private var permRow: NSView!
 
@@ -46,6 +49,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
         return b
     }
 
+    @objc private func transportChanged() { actions["transport"]?() }
     @objc private func clicked(_ b: NSButton) { actions[b.identifier?.rawValue ?? ""]?() }
     @objc private func toggled(_ s: ToggleSwitch) { actions[s.identifier?.rawValue ?? ""]?() }
 
@@ -173,7 +177,12 @@ final class MainWindow: NSObject, NSWindowDelegate {
         boxCol.alignment = .leading
         boxCol.spacing = 5
         boxRow.widthAnchor.constraint(equalTo: boxCol.widthAnchor).isActive = true
+        transportPicker.addItems(withTitles: ["自动（局域网优先）", "仅蓝牙", "仅局域网直连", "仅中枢转发"])
+        transportPicker.target = self
+        transportPicker.action = #selector(transportChanged)
+        let transportRow = NSStackView(views: [makeLabel("连接方式（所有设备）", size: 12), transportPicker])
         let settingsStack = NSStackView(views: [
+            transportRow,
             settingRow("开机自动启动", "登录系统后自动在菜单栏运行", autostartSwitch, key: "autostart"),
             settingRow("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", swapSwitch, key: "swap"),
             boxCol,
@@ -241,6 +250,8 @@ final class MainWindow: NSObject, NSWindowDelegate {
         pillDot.level = lv
         pillText.stringValue = line
         controlText.stringValue = s.controlLine().map { "· " + $0 } ?? ""
+        transportPicker.selectItem(at: transportModes.firstIndex(of: s.transportMode) ?? 0)
+        transportPicker.isEnabled = s.hubConnected
         sharingSwitch.isOn = s.sharingEnabled
         autostartSwitch.isOn = LoginItem.isEnabled
         permRow.isHidden = s.status[.permission]?.0 == .ok

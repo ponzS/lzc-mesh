@@ -16,10 +16,12 @@ static GtkWidget *window, *layout_view, *log_view, *box_entry, *open_btn;
 static GtkWidget *sharing_switch, *swap_switch, *autostart_switch;
 static GtkWidget *pill_dot, *pill_text, *control_text;
 static GtkWidget *status_dot[S_COUNT], *status_text[S_COUNT];
+static GtkWidget *transport_picker;
+static const char *transport_modes[] = {"auto", "bluetooth", "direct", "relay"};
 static bool updating;  // suppress switch signals while syncing from state
 
 static const char *labels[S_COUNT] = {
-    "懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板",
+    "懒猫微服客户端", "懒猫网络", "登录会话", "设备接力应用", "中枢连接", "输入权限", "控制状态", "本机屏幕", "共享剪贴板", "输入通道", "光标通道", "键盘通道",
 };
 
 static const char *css =
@@ -70,6 +72,13 @@ static void sync_switches(void) {
     gtk_switch_set_active(GTK_SWITCH(sharing_switch), app.sharing_enabled);
     gtk_switch_set_active(GTK_SWITCH(swap_switch), app.swap_cmd_ctrl);
     gtk_switch_set_active(GTK_SWITCH(autostart_switch), autostart_enabled());
+    if (transport_picker) {
+        guint selected=0;
+        for (guint i=0;i<G_N_ELEMENTS(transport_modes);i++)
+            if (!g_strcmp0(app.transport_mode,transport_modes[i])) selected=i;
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(transport_picker),selected);
+        gtk_widget_set_sensitive(transport_picker,app.hub_connected);
+    }
     updating = false;
 }
 
@@ -316,10 +325,21 @@ static GtkWidget *build_status(void) {
     return card("连接状态", NULL, box);
 }
 
+static void on_transport_mode(GObject *object, GParamSpec *pspec, gpointer unused) {
+    guint selected=gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
+    if (!updating && selected<G_N_ELEMENTS(transport_modes)) net_send_transport_mode(transport_modes[selected]);
+}
+
 static GtkWidget *build_settings(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_box_append(GTK_BOX(box), setting_row("开机自动启动", "登录系统后自动在托盘运行", &autostart_switch, G_CALLBACK(on_autostart)));
     gtk_box_append(GTK_BOX(box), setting_row("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", &swap_switch, G_CALLBACK(on_swap)));
+    const char *choices[]={"自动（局域网优先）","仅蓝牙","仅局域网直连","仅中枢转发",NULL};
+    transport_picker=gtk_drop_down_new_from_strings(choices);
+    gtk_widget_set_sensitive(transport_picker,FALSE);
+    g_signal_connect(transport_picker,"notify::selected",G_CALLBACK(on_transport_mode),NULL);
+    gtk_box_append(GTK_BOX(box),label("连接方式（同步到所有设备）",NULL,false));
+    gtk_box_append(GTK_BOX(box),transport_picker);
     GtkWidget *boxcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_box_append(GTK_BOX(boxcol), label("使用的微服", NULL, false));
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);

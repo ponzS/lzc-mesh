@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include <json-glib/json-glib.h>
 void net_connect(void);
 void net_disconnect(void);
 bool net_busy(void);
@@ -14,6 +15,10 @@ void net_send_release(void);
 void net_send_layout(const char *id, double x, double y);
 void net_send_forget(const char *id);
 void net_send_settings(bool swap);
+void net_send_transport_mode(const char *mode);
 void net_send_clipboard(const char *text);
 void net_send_sharing(bool on);
 void net_send_clipboard_setting(bool on);
+
+void net_send_raw(const char *text);
+void net_inject(JsonObject *object);

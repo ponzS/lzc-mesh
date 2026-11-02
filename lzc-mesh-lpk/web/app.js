@@ -10,6 +10,12 @@ const statusText = document.getElementById("status")
 const dot = document.getElementById("dot")
 const swap = document.getElementById("swap")
 const clipboardToggle = document.getElementById("clipboard")
+const transportMode = document.getElementById("transport-mode")
+const transportNote = document.getElementById("transport-note")
+const pauseAll = document.getElementById("pause-all")
+const inputNote = document.getElementById("input-note")
+const transportStatuses = new Map()
+const channelStatuses = new Map()
 
 const PLATFORM = { macos: "macOS", windows: "Windows", linux: "Linux" }
 let ws = null
@@ -20,6 +26,8 @@ let drag = null
 function setStatus(text, ok) {
   statusText.textContent = text
   dot.classList.toggle("ok", !!ok)
+  transportMode.disabled = !ok
+  pauseAll.disabled = !ok
 }
 
 function connect() {
@@ -35,6 +43,14 @@ function connect() {
     if (msg.t === "state") {
       state = msg
       if (!drag) render()
+    }
+    if (msg.t === "transport_status") {
+      if (msg.channel) {
+        const channels = channelStatuses.get(msg.id) || {}
+        channels[msg.channel] = msg.status
+        channelStatuses.set(msg.id, channels)
+      } else transportStatuses.set(msg.id, msg.status)
+      renderList()
     }
     if (msg.t === "files") renderFiles(msg.files)
     if (msg.t === "error") alert(msg.message)
@@ -70,6 +86,19 @@ function render() {
   computeView()
   swap.checked = !!state.settings?.swap_cmd_ctrl
   clipboardToggle.checked = !!state.settings?.clipboard
+  transportMode.value = state.settings?.transport_mode || "auto"
+  const enabled = state.settings?.input_enabled !== false
+  pauseAll.textContent = enabled ? "暂停全部设备接力" : "恢复设备接力"
+  pauseAll.classList.toggle("paused", !enabled)
+  transportNote.textContent = {
+    auto: "局域网可达时自动直连，不可达时通过中枢转发。",
+    bluetooth: "只使用经过双向认证的蓝牙连接；不可用时停止控制，不会改走局域网或中转。",
+    direct: "只使用已认证的局域网连接；直连不可用时停止控制，不会改走中转。",
+    relay: "全部输入通过中枢转发，客户端关闭蓝牙入口、局域网监听和探测。",
+  }[transportMode.value]
+  inputNote.textContent = enabled
+    ? "暂停会结束当前控制、释放按键，并关闭全部新版客户端的直连入口。"
+    : "所有设备的键鼠接力已暂停。恢复后再次跨屏即可控制。"
   empty.style.display = state.devices.length ? "none" : "flex"
   const seen = new Set()
   for (const d of state.devices) {
@@ -83,7 +112,7 @@ function render() {
       el.addEventListener("pointerdown", startDrag)
       stage.appendChild(el)
     }
-    const activeRole = state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : d.online && d.sharing === false ? "已暂停" : ""
+    const activeRole = state.settings?.input_enabled === false && d.online ? "接力已暂停" : state.active?.target === d.id ? "受控中" : state.active?.source === d.id ? "控制中" : d.online && d.sharing === false ? "已暂停" : ""
     el.classList.toggle("offline", !d.online)
     el.classList.toggle("active", !!activeRole)
     el.querySelector(".name").textContent = d.name
@@ -108,6 +137,22 @@ function renderList() {
     info.innerHTML = `<div></div><div class="meta"></div>`
     info.children[0].textContent = d.name
     info.children[1].textContent = `${PLATFORM[d.platform] || d.platform} · ${d.online ? (d.sharing === false ? "在线 · 已暂停键鼠共享" : "在线") : "离线"}${d.version ? " · v" + d.version : ""}`
+    if (d.online && transportStatuses.has(d.id)) {
+      const path = document.createElement("div")
+      path.className = "meta transport-status"
+      path.textContent = transportStatuses.get(d.id)
+      info.appendChild(path)
+    }
+    if (d.online) {
+      const channels = channelStatuses.get(d.id) || {}
+      for (const [channel, label] of [["pointer", "光标"], ["keyboard", "键盘"]]) {
+        if (!channels[channel]) continue
+        const line = document.createElement("div")
+        line.className = "meta transport-status"
+        line.textContent = `${label}：${channels[channel]}`
+        info.appendChild(line)
+      }
+    }
     li.appendChild(info)
     if (!d.online) {
       const btn = document.createElement("button")
@@ -148,6 +193,8 @@ function endDrag() {
   render()
 }
 
+transportMode.addEventListener("change", () => send({ t: "settings", transport_mode: transportMode.value }))
+pauseAll.addEventListener("click", () => send({ t: "settings", input_enabled: state.settings?.input_enabled === false }))
 swap.addEventListener("change", () => send({ t: "settings", swap_cmd_ctrl: swap.checked }))
 clipboardToggle.addEventListener("change", () => send({ t: "settings", clipboard: clipboardToggle.checked }))
 window.addEventListener("resize", () => drag || render())

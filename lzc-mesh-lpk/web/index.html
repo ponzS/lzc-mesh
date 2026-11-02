@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>懒猫设备接力</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=0.2.2-channels">
 </head>
 <body>
 <header>
@@ -41,6 +41,17 @@
     </div>
     <div class="panel">
       <h2>设置</h2>
+      <label class="mode-label" for="transport-mode">输入通道</label>
+      <select id="transport-mode" disabled>
+        <option value="auto">自动（局域网直连优先）</option>
+        <option value="bluetooth">仅蓝牙直连</option>
+        <option value="direct">仅局域网直连</option>
+        <option value="relay">仅中枢转发</option>
+      </select>
+      <p id="transport-note" class="note sub" role="status">局域网可达时自动直连，不可达时通过中枢转发。</p>
+      <button id="pause-all" class="pause-all" type="button" disabled>暂停全部设备接力</button>
+      <p id="input-note" class="note sub" role="status">暂停会结束当前控制、释放按键，并关闭全部新版客户端的直连入口。</p>
+
       <label class="row"><input type="checkbox" id="clipboard"> 共享剪贴板（文本）</label>
       <p class="note sub">默认开启：在任一设备上复制的文本会同步到其他在线设备。剪贴板内容只在设备间转发，不保存在微服上。</p>
       <label class="row"><input type="checkbox" id="swap"> Mac 与 Windows/Linux 互控时交换 Command 和 Ctrl</label>
@@ -57,6 +68,6 @@
     </div>
   </section>
 </main>
-<script src="app.js"></script>
+<script src="app.js?v=0.2.2-channels"></script>
 </body>
 </html>

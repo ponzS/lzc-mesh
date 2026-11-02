@@ -8,9 +8,12 @@
   <key>CFBundleExecutable</key><string>LZC Mesh</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.3</string>
-  <key>CFBundleVersion</key><string>4</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>9</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSBluetoothPeripheralUsageDescription</key><string>用于设备接力的加密蓝牙连接。</string>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>用于通过经过认证和加密的蓝牙连接共享本机键盘与光标。</string>
+  <key>NSLocalNetworkUsageDescription</key><string>用于与同一账号的设备建立经过认证和加密的局域网输入连接。</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSUIElement</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>

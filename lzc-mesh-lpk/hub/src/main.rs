@@ -21,6 +21,7 @@ use axum::response::{IntoResponse, Response};
 use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::{Json, Router};
+use axum::serve::ListenerExt;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
@@ -123,7 +124,9 @@ async fn main() {
         )
         .fallback_service(ServeDir::new(web).append_index_html_on_directories(true))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind").tap_io(|stream| {
+        if let Err(err) = stream.set_nodelay(true) { tracing::warn!(%err, "TCP_NODELAY unavailable"); }
+    });
     tracing::info!("lzc-mesh hub listening on {addr}");
     axum::serve(listener, router)
         .with_graceful_shutdown(async {

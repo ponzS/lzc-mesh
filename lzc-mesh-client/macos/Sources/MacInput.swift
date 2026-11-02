@@ -147,29 +147,15 @@ final class MacInput {
         if hide { CGDisplayHideCursor(CGMainDisplayID()) } else { CGDisplayShowCursor(CGMainDisplayID()) }
     }
 
-    private var anchor = CGPoint.zero
-    /// After a warp, the next motion event may carry the warp distance in its delta.
-    private var dropNextMotion = false
-    /// Distance the frozen cursor may drift before it is parked again.
-    private let maxDrift = 150.0
-
-    private func park() {
-        CGWarpMouseCursorPosition(anchor)
-        CGAssociateMouseAndMouseCursorPosition(0)
-        dropNextMotion = true
-    }
-
+    // Read deltas directly. Repeated cursor warps can suppress hardware mouse
+    // events on macOS; neither the initial capture nor drift recovery needs a
+    // warp when absolute cursor coordinates are not used for movement.
     func capture(_ on: Bool) {
         if on {
-            // Freeze the local cursor in the middle of the main display. Motion is taken
-            // from the raw device delta of each event, never from the cursor position:
-            // warps are applied asynchronously, so position-based deltas get counted
-            // twice once the warp lags behind the event stream.
-            let b = CGDisplayBounds(CGMainDisplayID())
-            anchor = CGPoint(x: b.midX.rounded(), y: b.midY.rounded())
             source?.localEventsSuppressionInterval = 0
-            park()
+            let result = CGAssociateMouseAndMouseCursorPosition(0)
             setCursorHidden(true)
+            AppState.shared.log("pointer_capture mode=relative cursor_warps=0 associate_result=\(result.rawValue)")
         } else {
             CGAssociateMouseAndMouseCursorPosition(1)
             setCursorHidden(false)
@@ -190,17 +176,9 @@ final class MacInput {
         guard let hub = hub else { return }
         switch type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            let captured = mesh_direct_now_us()
             let dx = event.getDoubleValueField(.mouseEventDeltaX), dy = event.getDoubleValueField(.mouseEventDeltaY)
-            // The first event after a warp can report the warp distance as its delta.
-            if dropNextMotion {
-                dropNextMotion = false
-                if abs(dx) > 40 || abs(dy) > 40 { return }
-            }
-            // The cursor is detached from the mouse, but the system re-attaches it in some
-            // cases (app switch, Mission Control); re-park it when it has drifted.
-            let p = event.location
-            if abs(p.x - anchor.x) > maxDrift || abs(p.y - anchor.y) > maxDrift { park() }
-            if dx != 0 || dy != 0 { hub.send(["t": "motion", "dx": dx, "dy": dy]) }
+            if dx != 0 || dy != 0 { hub.send(["t": "motion", "dx": dx, "dy": dy, "_capture_us": captured]) }
         case .leftMouseDown, .leftMouseUp: hub.send(["t": "button", "button": 1, "down": type == .leftMouseDown])
         case .rightMouseDown, .rightMouseUp: hub.send(["t": "button", "button": 2, "down": type == .rightMouseDown])
         case .otherMouseDown, .otherMouseUp:

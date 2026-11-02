@@ -1,0 +1,29 @@
+[package]
+name = "lzc-mesh-transport"
+version = "0.2.0"
+edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+if-addrs = "0.15"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+
+# macOS 27 dyld rejects some stripped proc-macro dylibs (rust-lang/rust#157750).
+# This only affects host-side build tools; the shipped library stays optimised.
+[profile.release.build-override]
+debug = 2
+strip = "none"
+codegen-units = 256

@@ -47,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "perm": { [weak self] in self?.input.requestPermissions() },
             "settings": { MacInput.openSettings(AXIsProcessTrusted() ? "Privacy_ListenEvent" : "Privacy_Accessibility") },
             "copy": { [weak self] in self?.copyDiagnostics() },
+            "transport": { [weak self] in
+                guard let self else { return }
+                self.hub.send(["t": "settings", "transport_mode": self.ui.selectedTransportMode])
+            },
             "swap": { [weak self] in self?.hub.send(["t": "settings", "swap_cmd_ctrl": !(self?.state.swapCmdCtrl ?? true)]) },
             "box": { [weak self] in self?.applyBox() },
         ]) { a, _ in a }
