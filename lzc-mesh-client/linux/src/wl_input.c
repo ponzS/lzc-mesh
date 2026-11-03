@@ -591,10 +591,16 @@ void wl_input_warp(double nx, double ny) {
     abs_move(nx, ny);
 }
 
+static void local_input_ready(bool available) {
+    if (!app.controlled || !app_operational()) return;
+    app_set_status(S_INPUT,available?ST_OK:ST_WARN,available?
+        "Wayland 虚拟输入及本机实体键鼠接管已就绪":
+        "虚拟输入已就绪；本机自动接管不可用：缺少实体键鼠读取权限");
+}
+
 void wl_input_enter(double nx, double ny) {
     W.quiet_until = g_get_monotonic_time() + 400 * 1000;
-    if (!local_input_start(net_local_activity))
-        app_set_status(S_INPUT,ST_WARN,"虚拟输入已就绪；本机自动接管不可用：缺少实体键鼠读取权限");
+    local_input_start(net_local_activity,local_input_ready);
     abs_move(nx, ny);
 }
 

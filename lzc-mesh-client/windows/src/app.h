@@ -15,7 +15,7 @@
 #include "json.h"
 #include "../../transport/input_gate.h"
 
-#define LZC_MESH_VERSION "0.2.2"
+#define LZC_MESH_VERSION "0.2.3"
 
 enum Level { L_UNKNOWN, L_OK, L_WARN, L_ERROR };
 

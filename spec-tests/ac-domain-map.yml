@@ -6,6 +6,7 @@ domains:
       - lzc-mesh-client/linux/src/**
       - lzc-mesh-lpk/web/**
       - spec-tests/device-*.py
+      - spec-tests/linux-local-input.c
       - spec-tests/windows-outbox.cpp
       - spec-tests/browser-probe.mjs
       - lzc-mesh-client/windows/src/**

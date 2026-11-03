@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.lzc-mesh
-version: 0.2.2
+version: 0.2.3
 name: 懒猫设备接力
 description: Share one keyboard, mouse, clipboard and files across your Mac, Windows and Omarchy computers (Linux currently supports Omarchy only) over the LazyCat network
 author: ponzs

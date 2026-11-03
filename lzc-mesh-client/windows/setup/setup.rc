@@ -3,8 +3,8 @@
 1 RT_MANIFEST "setup.manifest"
 CLIENT RCDATA "../build/LZC Mesh.exe"
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,2,2,0
-PRODUCTVERSION 0,2,2,0
+FILEVERSION 0,2,3,0
+PRODUCTVERSION 0,2,3,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -12,7 +12,7 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "懒猫设备接力 安装程序"
       VALUE "ProductName", "懒猫设备接力"
-      VALUE "ProductVersion", "0.2.2"
+      VALUE "ProductVersion", "0.2.3"
     END
   END
   BLOCK "VarFileInfo"
