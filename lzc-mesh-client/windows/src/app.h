@@ -13,8 +13,9 @@
 #include <vector>
 
 #include "json.h"
+#include "../../transport/input_gate.h"
 
-#define LZC_MESH_VERSION "0.2.1"
+#define LZC_MESH_VERSION "0.2.2"
 
 enum Level { L_UNKNOWN, L_OK, L_WARN, L_ERROR };
 
@@ -66,7 +67,8 @@ struct App {
     bool hubConnected = false;
     std::string hubUser;
     std::vector<MeshDevice> devices;
-    std::string activeSource, activeTarget;
+    std::string activeSource, activeTarget, activeControlId, receiveControlId, blockedControlId;
+    MeshInputGate inputGate{};
     bool swapCmdCtrl = true;
     bool clipboardEnabled = false;
     bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted

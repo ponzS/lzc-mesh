@@ -25,6 +25,9 @@ final class MacInput {
     private var active = false
 
     func setActive(_ on: Bool) {
+        if on && !active {
+            physicalModifiers = Set(macModifiers.keys.filter { CGEventSource.keyState(.hidSystemState, key: $0) })
+        }
         active = on
         if !on {
             capture(false); leave()
@@ -43,6 +46,7 @@ final class MacInput {
     private var heldKeys = Set<UInt16>()    // injected keys still down
     private var heldButtons = Set<Int>()
     private var cursorHidden = false
+    private var physicalModifiers = Set<UInt16>()
     private var clickState = (time: Date.distantPast, button: 0, count: 0)
     private var source = CGEventSource(stateID: .hidSystemState)
 
@@ -116,6 +120,38 @@ final class MacInput {
         }
         if event.getIntegerValueField(.eventSourceUserData) == injectedMarker { return Unmanaged.passUnretained(event) }
         let s = AppState.shared
+        // The app's own events were excluded above. Hardware events have no
+        // originating userspace PID; ignore other applications' synthetic input.
+        let hardware = event.getIntegerValueField(.eventSourceUnixProcessID) == 0
+        if hardware && type == .flagsChanged {
+            let key = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            if macModifiers[key] != nil {
+                if physicalModifiers.contains(key) { physicalModifiers.remove(key) } else { physicalModifiers.insert(key) }
+            }
+        }
+        if s.controlled && hardware {
+            let moving = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(type)
+            let pointerMoved = moving && (event.getDoubleValueField(.mouseEventDeltaX) != 0 || event.getDoubleValueField(.mouseEventDeltaY) != 0)
+            let momentumOnly = type == .scrollWheel && event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
+            if pointerMoved || (!moving && !momentumOnly) {
+                let copy = event.copy()
+                hub?.localActivity()
+                if !s.controlled, let copy {
+                    // Release injected modifiers before delivering the triggering
+                    // hardware event; otherwise a plain local key/click can be
+                    // interpreted with a remote Ctrl/Command still held.
+                    let mask = macModifiers.values.reduce(UInt64(0)) { $0 | $1.0 | $1.1 }
+                    let physical = physicalModifiers.reduce(UInt64(0)) { value, key in
+                        guard let bits = macModifiers[key] else { return value }
+                        return value | bits.0 | bits.1
+                    }
+                    copy.flags = CGEventFlags(rawValue: (copy.flags.rawValue & ~mask) | physical)
+                    post(copy)
+                    if moving { checkEdge(copy) }
+                    return nil
+                }
+            }
+        }
         if s.captured {
             forward(type: type, event: event)
             return nil  // swallow: this Mac's input belongs to the remote device now
@@ -158,9 +194,10 @@ final class MacInput {
 
     private func setCursorHidden(_ hide: Bool) {
         guard hide != cursorHidden else { return }
-        cursorHidden = hide
         _ = CGSSetConnectionProperty(_CGSDefaultConnection(), _CGSDefaultConnection(), "SetsCursorInBackground" as CFString, kCFBooleanTrue)
-        if hide { CGDisplayHideCursor(CGMainDisplayID()) } else { CGDisplayShowCursor(CGMainDisplayID()) }
+        let result = hide ? CGDisplayHideCursor(CGMainDisplayID()) : CGDisplayShowCursor(CGMainDisplayID())
+        if result == .success { cursorHidden = hide }
+        else { AppState.shared.log("pointer_visibility operation=\(hide ? "hide" : "show") result=\(result.rawValue)") }
     }
 
     // Read deltas directly. Repeated cursor warps can suppress hardware mouse
@@ -171,6 +208,9 @@ final class MacInput {
             source?.localEventsSuppressionInterval = 0
             let result = CGAssociateMouseAndMouseCursorPosition(0)
             setCursorHidden(true)
+            for key in physicalModifiers.sorted() {
+                if let code = macToEvdev[key] { hub?.send(["t": "key", "code": code, "down": true]) }
+            }
             AppState.shared.log("pointer_capture mode=relative cursor_warps=0 associate_result=\(result.rawValue)")
         } else {
             CGAssociateMouseAndMouseCursorPosition(1)
@@ -254,8 +294,15 @@ final class MacInput {
     }
 
     func enter(_ nx: Double, _ ny: Double) {
-        quietUntil = Date().addingTimeInterval(0.4)
+        // One entry warp restores the system cursor, not just application hit
+        // testing. Ongoing displacement and scrolling remain unchanged.
+        warp(nx, ny)
         move(nx, ny)
+    }
+
+    func localTakeover() {
+        leave()
+        quietUntil = .distantPast
     }
 
     func move(_ nx: Double, _ ny: Double) {

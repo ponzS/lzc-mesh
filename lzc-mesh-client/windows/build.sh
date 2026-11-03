@@ -22,7 +22,7 @@ zig rc /fo build/setup.res setup/setup.rc
 $CXX setup/setup.cpp build/setup.res -luser32 -lshell32 -lole32 -luuid -ladvapi32 -o build/lzc-mesh-windows-setup.exe
 cp build/lzc-mesh-windows-setup.exe ../dist/lzc-mesh-windows-setup.exe
 rm -rf build/pkg && mkdir -p "build/pkg/LZC Mesh"
-cp "build/LZC Mesh.exe" install.ps1 "build/pkg/LZC Mesh/"
+cp "build/LZC Mesh.exe" install.ps1 ../../LICENSE "build/pkg/LZC Mesh/"
 rm -f ../dist/lzc-mesh-windows.zip
 (cd build/pkg && bsdtar -a -cf ../../../dist/lzc-mesh-windows.zip "LZC Mesh")
 echo built

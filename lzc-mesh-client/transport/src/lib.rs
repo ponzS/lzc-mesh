@@ -153,7 +153,7 @@ pub extern "C" fn mesh_direct_input(handle: *mut Handle, text: *const c_char) ->
     let Some(v) = parse(text) else { return false };
     if !matches!(
         v["t"].as_str(),
-        Some("edge" | "motion" | "button" | "key" | "wheel" | "release")
+        Some("edge" | "motion" | "button" | "key" | "wheel" | "release" | "local_activity")
     ) {
         return false;
     }

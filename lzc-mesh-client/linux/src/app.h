@@ -4,6 +4,7 @@
 #include <glib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../../transport/input_gate.h"
 
 typedef enum { ST_UNKNOWN, ST_OK, ST_WARN, ST_ERROR } StatusLevel;
 
@@ -60,6 +61,8 @@ typedef struct {
     char *hub_user;
     GPtrArray *devices;  // MeshDevice*
     char *active_source, *active_target;
+    char *active_control_id, *receive_control_id, *blocked_control_id, *source_control_id;
+    MeshInputGate input_gate;
     bool swap_cmd_ctrl;
     char *transport_mode;
     bool clipboard_enabled;

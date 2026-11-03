@@ -25,9 +25,16 @@ public:
             frames.back().dx += dx; frames.back().dy += dy;
         } else frames.push_back(Frame{"", dx, dy, captured, true});
     }
-    std::string take() {
+    std::string take(const std::string &scope = "") {
         Frame f = std::move(frames.front()); frames.pop_front();
-        return f.motion ? JsonOut().s("t", "motion").n("dx", f.dx).n("dy", f.dy).n("_capture_us", (double)f.captured).str() : f.text;
+        auto text = f.motion ? JsonOut().s("t", "motion").n("dx", f.dx).n("dy", f.dy).n("_capture_us", (double)f.captured).str() : f.text;
+        if (!scope.empty()) {
+            // Frames are internally serialized JSON objects. Append an escaped
+            // capture ID without reparsing every high-frequency mouse frame.
+            const auto binding = JsonOut().s("_control_session", scope).str();
+            text.pop_back(); text += "," + binding.substr(1);
+        }
+        return text;
     }
 };
 

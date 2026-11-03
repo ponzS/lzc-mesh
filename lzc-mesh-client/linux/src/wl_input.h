@@ -11,6 +11,7 @@ void wl_input_capture(bool on);
 void wl_input_warp(double nx, double ny);       // normalised over the local desktop
 void wl_input_enter(double nx, double ny);
 void wl_input_leave(void);
+void wl_input_local_takeover(void);
 void wl_input_move(double nx, double ny);
 void wl_input_button(int button, bool down);
 void wl_input_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y);

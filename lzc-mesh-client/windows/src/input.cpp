@@ -3,10 +3,12 @@
 #include "direct.h"
 #include "input_queue.h"
 #include "pointer_math.h"
+#include "capture_pointer.h"
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include <thread>
 
@@ -17,13 +19,51 @@ namespace input {
 namespace {
 const ULONG_PTR kMarker = 0x4C5A4D45;  // dwExtraInfo of events we inject
 
-std::atomic<bool> captured{false}, hubOn{false}, controlled{false}, sharingOn{true};
+std::atomic<bool> captured{false}, hubOn{false}, sharingOn{true};
+// The low bit is receiver ownership; the remaining bits bind a hardware event
+// to the particular enter, so a queued takeover cannot cancel a later enter.
+std::atomic<uint64_t> receiverState{0};
+std::atomic<uint64_t> mappedKeys{0}, unmappedKeys{0};
+constexpr UINT rearmHooks = WM_APP + 41;
+std::mutex localMutex;
+std::deque<INPUT> localPending;
+uint64_t localEpoch = 0;
+bool localOverflow = false;
+void sendInputs(INPUT *in, UINT n);
+bool receiverOn() { return (receiverState.load() & 1) != 0; }
+void physicalActivity() {
+    auto state = receiverState.load();
+    if ((state & 1) && receiverState.compare_exchange_strong(state, state & ~uint64_t(1))) {
+        std::lock_guard<std::mutex> lock(localMutex);
+        localEpoch = state >> 1; localPending.clear(); localOverflow = false;
+        PostMessageW(g.hwnd, WM_APP_INPUT, 4, (LPARAM)localEpoch);
+    }
+}
 std::atomic<uint64_t> captureEpoch{0};
+SourcePointerGate sourcePointer;
+std::atomic<DWORD> captureBegan{0};
+std::atomic<uint64_t> parkObserved{0};
+std::atomic<DWORD> parkObservedFlags{0};
+UINT_PTR parkTimer=0;
+uint64_t parkTimerEpoch=0,parkDeadline=0;
+POINT parkExpected{};  // UI thread only, including the timer callback
+void CALLBACK parkTimeout(HWND,UINT,UINT_PTR id,DWORD) {
+    if (id!=parkTimer || GetTickCount64()<parkDeadline) return;
+    KillTimer(nullptr,id);parkTimer=0;
+    if (captured && captureEpoch==parkTimerEpoch) {
+        POINT actual{};
+        GetCursorPos(&actual);
+        logLine(fmt(L"pointer_park ready=%d observed=%llu flags=%lu actual=(%ld,%ld)",sourcePointer.ready(parkTimerEpoch)?1:0,(unsigned long long)parkObserved.load(),parkObservedFlags.load(),actual.x,actual.y));
+        if (!sourcePointer.ready(parkTimerEpoch) || !GetCursorPos(&actual) || actual.x!=parkExpected.x || actual.y!=parkExpected.y) {
+            captured=false;sourcePointer.end();
+            PostMessageW(g.hwnd,WM_APP_INPUT,3,(LPARAM)parkTimerEpoch);
+        }
+    }
+}
 std::atomic<bool> edges[4];  // left right up down
 std::atomic<long long> quietUntil{0}, lastEdge{0};
 std::atomic<int> vx{0}, vy{0}, vw{0}, vh{0};
 std::atomic<double> scale{1.0};
-POINT anchor{};
 HHOOK mouseHook, keyHook;
 DWORD hookThreadId;
 std::thread hookThread, sendThread;
@@ -36,22 +76,31 @@ HWND overlay;
 std::mutex qmu;
 std::condition_variable qcv;
 InputQueue queue;
+std::string sourceSession;  // protected by qmu, like the capture queue
 bool running = false;
 
 void checkQueueLimit() {
     if (queue.size() <= 512) return;
     queue.clear();
-    captured = false;
-    ++captureEpoch;
-    PostMessageW(g.hwnd, WM_APP_INPUT, 3, 0);
+    captured = false; sourcePointer.end();
+    const auto failedEpoch=++captureEpoch;
+    PostMessageW(g.hwnd, WM_APP_INPUT, 3, (LPARAM)failedEpoch);
 }
-void enqueue(std::string s) {
-    { std::lock_guard<std::mutex> l(qmu); queue.event(std::move(s)); checkQueueLimit(); }
+void enqueue(std::string s, uint64_t epoch) {
+    {
+        std::lock_guard<std::mutex> l(qmu);
+        if (!captured || captureEpoch!=epoch || !sourcePointer.ready(epoch)) return;
+        queue.event(std::move(s)); checkQueueLimit();
+    }
     qcv.notify_one();
 }
-void enqueueMotion(double dx, double dy) {
+void enqueueMotion(double dx, double dy, uint64_t epoch) {
     const auto timestamp = direct::nowUs();
-    { std::lock_guard<std::mutex> l(qmu); queue.motion(dx, dy, timestamp); checkQueueLimit(); }
+    {
+        std::lock_guard<std::mutex> l(qmu);
+        if (!captured || captureEpoch!=epoch || !sourcePointer.ready(epoch)) return;
+        queue.motion(dx, dy, timestamp); checkQueueLimit();
+    }
     qcv.notify_one();
 }
 void sender() {
@@ -60,7 +109,7 @@ void sender() {
         qcv.wait(l, [] { return !running || !queue.empty(); });
         if (!running) break;
         const auto epoch = captureEpoch.load();
-        auto frame = queue.take();
+        auto frame = queue.take(sourceSession);
         l.unlock();
         if (captured && captureEpoch == epoch) direct::send(frame);
         l.lock();
@@ -124,10 +173,56 @@ uint32_t scanToEvdev(uint16_t sc, bool ext) {
     return sc < 256 ? table[ext ? 1 : 0][sc] : 0;
 }
 
+// Hook-thread-only forwarded state. Seed modifiers on the first captured
+// hardware event so a modifier held while crossing also reaches the target.
+std::set<uint32_t> sourceHeld;
+uint64_t sourceHeldEpoch=0;
+void seedModifiers(uint64_t epoch) {
+    if(sourceHeldEpoch==epoch)return;
+    sourceHeld.clear();sourceHeldEpoch=epoch;
+    const struct {int vk;uint32_t code;} modifiers[]={{VK_LCONTROL,29},{VK_RCONTROL,97},{VK_LMENU,56},{VK_RMENU,100},{VK_LSHIFT,42},{VK_RSHIFT,54},{VK_LWIN,125},{VK_RWIN,126}};
+    for(const auto &key:modifiers)if(GetAsyncKeyState(key.vk)&0x8000) {
+        sourceHeld.insert(key.code);
+        enqueue(JsonOut().s("t","key").n("code",key.code).b("down",true).str(),epoch);
+    }
+}
+
 // ---- hooks
 
+bool deferLocal(INPUT event) {
+    std::lock_guard<std::mutex> lock(localMutex);
+    if (!localEpoch) return false;
+    const DWORD motion = MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;
+    if (event.type==INPUT_MOUSE && event.mi.dwFlags==motion && !localPending.empty() && localPending.back().type==INPUT_MOUSE && localPending.back().mi.dwFlags==motion)
+        localPending.back()=event;
+    else if (!localOverflow) {
+        if (localPending.size()>=512) {localPending.clear();localOverflow=true;}
+        else localPending.push_back(event);
+    }
+    return true;
+}
+bool deferMouse(const MSLLHOOKSTRUCT &m, WPARAM message) {
+    INPUT event{};event.type=INPUT_MOUSE;
+    event.mi.dx=absolutePixel(double(m.pt.x-vx)/std::max(1,(int)vw),vw);
+    event.mi.dy=absolutePixel(double(m.pt.y-vy)/std::max(1,(int)vh),vh);
+    event.mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;
+    switch(message) {
+    case WM_MOUSEMOVE:break;
+    case WM_LBUTTONDOWN:event.mi.dwFlags|=MOUSEEVENTF_LEFTDOWN;break;
+    case WM_LBUTTONUP:event.mi.dwFlags|=MOUSEEVENTF_LEFTUP;break;
+    case WM_RBUTTONDOWN:event.mi.dwFlags|=MOUSEEVENTF_RIGHTDOWN;break;
+    case WM_RBUTTONUP:event.mi.dwFlags|=MOUSEEVENTF_RIGHTUP;break;
+    case WM_MBUTTONDOWN:event.mi.dwFlags|=MOUSEEVENTF_MIDDLEDOWN;break;
+    case WM_MBUTTONUP:event.mi.dwFlags|=MOUSEEVENTF_MIDDLEUP;break;
+    case WM_XBUTTONDOWN:case WM_XBUTTONUP:event.mi.dwFlags|=message==WM_XBUTTONDOWN?MOUSEEVENTF_XDOWN:MOUSEEVENTF_XUP;event.mi.mouseData=HIWORD(m.mouseData);break;
+    case WM_MOUSEWHEEL:case WM_MOUSEHWHEEL:event.mi.dwFlags|=message==WM_MOUSEWHEEL?MOUSEEVENTF_WHEEL:MOUSEEVENTF_HWHEEL;event.mi.mouseData=(DWORD)(LONG)(SHORT)HIWORD(m.mouseData);break;
+    default:return false;
+    }
+    return deferLocal(event);
+}
+
 void edgeCheck(POINT pt) {
-    if (!hubOn || !sharingOn || controlled || nowMs() < quietUntil || nowMs() - lastEdge < 250) return;
+    if (!hubOn || !sharingOn || receiverOn() || nowMs() < quietUntil || nowMs() - lastEdge < 250) return;
     int x0 = vx, y0 = vy, x1 = vx + vw - 1, y1 = vy + vh - 1;
     int dir = -1;
     if (edges[0] && pt.x <= x0) dir = 0;
@@ -143,37 +238,69 @@ void edgeCheck(POINT pt) {
 LRESULT CALLBACK mouseProc(int code, WPARAM wp, LPARAM lp) {
     if (code != HC_ACTION) return CallNextHookEx(nullptr, code, wp, lp);
     auto *m = (MSLLHOOKSTRUCT *)lp;
-    if ((m->flags & LLMHF_INJECTED) && m->dwExtraInfo == kMarker) return CallNextHookEx(nullptr, code, wp, lp);
+    if (SourcePointerGate::isParkMarker(m->dwExtraInfo)) {parkObserved=m->dwExtraInfo;parkObservedFlags=m->flags;}
+    if ((m->flags & LLMHF_INJECTED) && SourcePointerGate::isParkMarker(m->dwExtraInfo)) {
+        const auto epoch=captureEpoch.load();
+        if (!captured || m->dwExtraInfo!=SourcePointerGate::parkMarker(epoch)) return 1;
+        if (!sourcePointer.parked(epoch)) return 1;
+        captureBegan=m->time;
+        return CallNextHookEx(nullptr, code, wp, lp);
+    }
+    if ((m->flags & LLMHF_INJECTED) && m->dwExtraInfo == kMarker) {
+        // A queued old receiver move must not displace a new source's cursor.
+        if (captured && wp==WM_MOUSEMOVE) return 1;
+        return CallNextHookEx(nullptr, code, wp, lp);
+    }
+    if (!(m->flags & LLMHF_INJECTED)) {
+        physicalActivity();
+        if (deferMouse(*m,wp)) return 1;
+    }
+    const auto epoch=captureEpoch.load();
     if (!captured) {
         if (wp == WM_MOUSEMOVE && !(m->flags & LLMHF_INJECTED)) edgeCheck(m->pt);
         return CallNextHookEx(nullptr, code, wp, lp);
     }
-    // Capturing: swallow everything; the pointer stays parked on the anchor.
+    if (!sourcePointer.ready(epoch) || (int32_t)(m->time-captureBegan.load())<0) return 1;
+    // Capturing: swallow local movement, after our marked park has passed.
+    seedModifiers(epoch);
     double s = scale;
     switch (wp) {
     case WM_MOUSEMOVE: {
-        double dx = (m->pt.x - anchor.x) / s, dy = (m->pt.y - anchor.y) / s;
-        if (dx != 0 || dy != 0) enqueueMotion(dx, dy);
+        POINT actual{};
+        if (!GetCursorPos(&actual)) return 1;
+        const double dx=capturedPointerDelta(m->pt.x,actual.x,s),dy=capturedPointerDelta(m->pt.y,actual.y,s);
+        if (dx != 0 || dy != 0) enqueueMotion(dx, dy, epoch);
         break;
     }
-    case WM_LBUTTONDOWN: case WM_LBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 1).b("down", wp == WM_LBUTTONDOWN).str()); break;
-    case WM_RBUTTONDOWN: case WM_RBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 2).b("down", wp == WM_RBUTTONDOWN).str()); break;
-    case WM_MBUTTONDOWN: case WM_MBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 3).b("down", wp == WM_MBUTTONDOWN).str()); break;
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 1).b("down", wp == WM_LBUTTONDOWN).str(),epoch); break;
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 2).b("down", wp == WM_RBUTTONDOWN).str(),epoch); break;
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: enqueue(JsonOut().s("t", "button").n("button", 3).b("down", wp == WM_MBUTTONDOWN).str(),epoch); break;
     case WM_XBUTTONDOWN: case WM_XBUTTONUP: {
         int b = HIWORD(m->mouseData) == XBUTTON1 ? 4 : 5;
-        enqueue(JsonOut().s("t", "button").n("button", b).b("down", wp == WM_XBUTTONDOWN).str());
+        enqueue(JsonOut().s("t", "button").n("button", b).b("down", wp == WM_XBUTTONDOWN).str(),epoch);
         break;
     }
-    case WM_MOUSEWHEEL: enqueue(JsonOut().s("t", "wheel").n("dx", 0).n("dy", (short)HIWORD(m->mouseData)).s("source", "wheel").str()); break;
-    case WM_MOUSEHWHEEL: enqueue(JsonOut().s("t", "wheel").n("dx", -(short)HIWORD(m->mouseData)).n("dy", 0).s("source", "wheel").str()); break;
+    case WM_MOUSEWHEEL: enqueue(JsonOut().s("t", "wheel").n("dx", 0).n("dy", (short)HIWORD(m->mouseData)).s("source", "wheel").str(),epoch); break;
+    case WM_MOUSEHWHEEL: enqueue(JsonOut().s("t", "wheel").n("dx", -(short)HIWORD(m->mouseData)).n("dy", 0).s("source", "wheel").str(),epoch); break;
     }
     return 1;
 }
 
 LRESULT CALLBACK keyProc(int code, WPARAM wp, LPARAM lp) {
-    if (code != HC_ACTION || !captured) return CallNextHookEx(nullptr, code, wp, lp);
+    if (code != HC_ACTION) return CallNextHookEx(nullptr, code, wp, lp);
     auto *k = (KBDLLHOOKSTRUCT *)lp;
     if ((k->flags & LLKHF_INJECTED) && k->dwExtraInfo == kMarker) return CallNextHookEx(nullptr, code, wp, lp);
+    if (!(k->flags & LLKHF_INJECTED)) {
+        physicalActivity();
+        INPUT event{};event.type=INPUT_KEYBOARD;
+        event.ki.wScan=(WORD)k->scanCode;event.ki.wVk=k->scanCode?0:(WORD)k->vkCode;
+        event.ki.dwFlags=(k->scanCode?KEYEVENTF_SCANCODE:0)|((k->flags&LLKHF_EXTENDED)?KEYEVENTF_EXTENDEDKEY:0)|((wp==WM_KEYUP||wp==WM_SYSKEYUP)?KEYEVENTF_KEYUP:0);
+        if (deferLocal(event)) return 1;
+    }
+    const auto epoch=captureEpoch.load();
+    if (!captured) return CallNextHookEx(nullptr, code, wp, lp);
+    if (!sourcePointer.ready(epoch) || (int32_t)(k->time-captureBegan.load())<0) return 1;
+    seedModifiers(epoch);
     bool down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
     uint32_t e = scanToEvdev((uint16_t)k->scanCode, k->flags & LLKHF_EXTENDED);
     if (!e) {
@@ -181,16 +308,15 @@ LRESULT CALLBACK keyProc(int code, WPARAM wp, LPARAM lp) {
         UINT sc = MapVirtualKeyW(k->vkCode, MAPVK_VK_TO_VSC_EX);
         e = scanToEvdev(sc & 0xFF, (sc & 0xFF00) == 0xE000);
     }
-    static std::set<uint32_t> held;
-    static uint64_t heldEpoch = 0;
-    const auto epoch = captureEpoch.load();
-    if (heldEpoch != epoch) { held.clear(); heldEpoch = epoch; }
+    auto &held=sourceHeld;
     if (e) {
+        ++mappedKeys;
         // Auto-repeat would look like extra key presses on the target: forward only state changes.
         bool was = held.count(e) > 0;
-        if (down && !was) { held.insert(e); enqueue(JsonOut().s("t", "key").n("code", e).b("down", true).str()); }
-        if (!down && was) { held.erase(e); enqueue(JsonOut().s("t", "key").n("code", e).b("down", false).str()); }
+        if (down && !was) { held.insert(e); enqueue(JsonOut().s("t", "key").n("code", e).b("down", true).str(),epoch); }
+        if (!down && was) { held.erase(e); enqueue(JsonOut().s("t", "key").n("code", e).b("down", false).str(),epoch); }
     }
+    if (!e) ++unmappedKeys;
     if (!captured) held.clear();
     return 1;
 }
@@ -207,7 +333,18 @@ void hookLoop() {
     PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE); // Ensure a queue exists before stop can post WM_QUIT.
     { std::lock_guard<std::mutex> lock(hookMutex); hookStarted = true; }
     hookReady.notify_one();
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {}
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == rearmHooks) {
+            // Windows can silently remove either timed-out low-level hook.
+            // Re-arm both on their owning thread at every new source role.
+            if (mouseHook) UnhookWindowsHookEx(mouseHook);
+            if (keyHook) UnhookWindowsHookEx(keyHook);
+            mouseHook = SetWindowsHookExW(WH_MOUSE_LL, mouseProc, GetModuleHandleW(nullptr), 0);
+            keyHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyProc, GetModuleHandleW(nullptr), 0);
+            { std::lock_guard<std::mutex> guard(hookMutex); hookStarted = true; }
+            hookReady.notify_one();
+        }
+    }
     if (mouseHook) UnhookWindowsHookEx(mouseHook);
     if (keyHook) UnhookWindowsHookEx(keyHook);
 }
@@ -313,18 +450,47 @@ void setEdges(bool l, bool r, bool u, bool d) { edges[0] = l; edges[1] = r; edge
 void setHubConnected(bool on) { hubOn = on; }
 void setSharing(bool on) { sharingOn = on; }
 
-void capture(bool on) {
-    ++captureEpoch;
-    { std::lock_guard<std::mutex> lock(qmu); queue.clear(); }
+void capture(bool on, const std::string &session) {
+    const bool wasCaptured=captured.exchange(false);
+    if (parkTimer) {KillTimer(nullptr,parkTimer);parkTimer=0;}
+    sourcePointer.end();
+    const auto epoch=++captureEpoch;
+    { std::lock_guard<std::mutex> lock(qmu); queue.clear(); sourceSession = on ? session : ""; }
     if (on) {
+        receiverState.fetch_and(~uint64_t(1));
+        mappedKeys = unmappedKeys = 0;
+        {
+            std::unique_lock<std::mutex> lock(hookMutex);
+            hookStarted = false;
+            const bool posted = PostThreadMessageW(hookThreadId, rearmHooks, 0, 0);
+            if (!posted || !hookReady.wait_for(lock, std::chrono::milliseconds(200), [] { return hookStarted; }) || !keyHook || !mouseHook) {
+                PostMessageW(g.hwnd, WM_APP_INPUT, 3, (LPARAM)epoch);
+                return;
+            }
+        }
         HMONITOR mon = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO mi{sizeof mi};
-        GetMonitorInfoW(mon, &mi);
-        anchor = POINT{(mi.rcMonitor.left + mi.rcMonitor.right) / 2, (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2};
+        if (!GetMonitorInfoW(mon, &mi)) {PostMessageW(g.hwnd,WM_APP_INPUT,3,(LPARAM)epoch);return;}
+        const POINT anchor{(mi.rcMonitor.left + mi.rcMonitor.right) / 2, (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2};
         showOverlay(true);
-        SetCursorPos(anchor.x, anchor.y);
-        captured = true;
+        INPUT park{};park.type=INPUT_MOUSE;
+        park.mi.dx=absolutePixel(double(anchor.x-vx)/std::max(1,(int)vw),vw);
+        park.mi.dy=absolutePixel(double(anchor.y-vy)/std::max(1,(int)vh),vh);
+        park.mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;
+        park.mi.dwExtraInfo=(ULONG_PTR)SourcePointerGate::parkMarker(epoch);
+        parkObserved=0;parkObservedFlags=0;
+        sourcePointer.begin(epoch);captured=true;
+        parkTimerEpoch=epoch;parkDeadline=GetTickCount64()+250;parkExpected=anchor;
+        parkTimer=SetTimer(nullptr,0,250,parkTimeout);
+        // Unlike unmarked SetCursorPos, our own hook cannot swallow this park
+        // as if it were user motion after the source role has already begun.
+        if (!parkTimer || SendInput(1,&park,sizeof park)!=1) {
+            captured=false;sourcePointer.end();
+            PostMessageW(g.hwnd,WM_APP_INPUT,3,(LPARAM)epoch);
+        }
+        logLine(fmt(L"pointer_capture epoch=%llu park=(%ld,%ld) marked=1",(unsigned long long)epoch,anchor.x,anchor.y));
     } else {
+        if (wasCaptured) logLine(fmt(L"keyboard_capture mapped=%llu unmapped=%llu", (unsigned long long)mappedKeys.load(), (unsigned long long)unmappedKeys.load()));
         captured = false;
         showOverlay(false);
         quietUntil = nowMs() + 400;
@@ -333,9 +499,7 @@ void capture(bool on) {
 
 void warp(double nx, double ny) {
     quietUntil = nowMs() + 400;
-    if (!std::isfinite(nx) || !std::isfinite(ny)) return;
-    SetCursorPos(vx + (int)std::clamp(std::round(nx * vw), 0.0, double(std::max(0, (int)vw - 1))),
-                 vy + (int)std::clamp(std::round(ny * vh), 0.0, double(std::max(0, (int)vh - 1))));
+    move(nx,ny);  // marked, so a late return cannot displace a fresh capture
 }
 
 void move(double nx, double ny) {
@@ -348,8 +512,68 @@ void move(double nx, double ny) {
     sendInputs(&in, 1);
 }
 
+void completeLocalActivity(uint64_t epoch, bool replay) {
+    // A hardware burst may continue while batches are replayed. If a later
+    // batch overflows, release any downs already replayed before failing closed.
+    std::map<uint64_t,INPUT> recovery;
+    for (;;) {
+        std::vector<INPUT> batch;
+        bool done=false, overflowed=false;
+        {
+            std::lock_guard<std::mutex> lock(localMutex);
+            if (localEpoch!=epoch) return;
+            if (!replay || localOverflow || localPending.empty()) {
+                done=true;overflowed=localOverflow;
+                localPending.clear();localEpoch=0;localOverflow=false;
+            } else {batch.assign(localPending.begin(),localPending.end());localPending.clear();}
+        }
+        if (done) {
+            if (overflowed || !replay) {
+                std::vector<INPUT> releases;
+                for (const auto &entry:recovery) releases.push_back(entry.second);
+                if (!releases.empty()) sendInputs(releases.data(),(UINT)releases.size());
+            }
+            if (overflowed) logLine(L"本机接管输入积压超限，已安全丢弃，未回放按键");
+            if (replay && !overflowed) {
+                quietUntil=nowMs();
+                POINT point{};if(GetCursorPos(&point))edgeCheck(point);
+            }
+            return;
+        }
+        for (const auto &event:batch) {
+            if (event.type==INPUT_KEYBOARD) {
+                uint64_t id=(uint64_t(1)<<48)|(uint64_t(event.ki.wScan)<<16)|event.ki.wVk|((event.ki.dwFlags&KEYEVENTF_EXTENDEDKEY)?(uint64_t(1)<<40):0);
+                if(event.ki.dwFlags&KEYEVENTF_KEYUP)recovery.erase(id);
+                else {INPUT up=event;up.ki.dwFlags|=KEYEVENTF_KEYUP;recovery[id]=up;}
+            } else if(event.type==INPUT_MOUSE) {
+                const struct {DWORD down,up;uint64_t id;} buttons[]={{MOUSEEVENTF_LEFTDOWN,MOUSEEVENTF_LEFTUP,1},{MOUSEEVENTF_RIGHTDOWN,MOUSEEVENTF_RIGHTUP,2},{MOUSEEVENTF_MIDDLEDOWN,MOUSEEVENTF_MIDDLEUP,3},{MOUSEEVENTF_XDOWN,MOUSEEVENTF_XUP,4}};
+                for(const auto &button:buttons) {
+                    uint64_t id=(uint64_t(2)<<48)|button.id|(button.id==4?(uint64_t(event.mi.mouseData)<<8):0);
+                    if(event.mi.dwFlags&button.up)recovery.erase(id);
+                    if(event.mi.dwFlags&button.down){INPUT up{};up.type=INPUT_MOUSE;up.mi.dwFlags=button.up;up.mi.mouseData=event.mi.mouseData;recovery[id]=up;}
+                }
+            }
+        }
+        // Never hold localMutex while SendInput invokes low-level callbacks.
+        sendInputs(batch.data(),(UINT)batch.size());
+    }
+}
+
+uint64_t captureGeneration() { return captureEpoch.load(); }
+void releaseRemote() {
+    std::string id;
+    { std::lock_guard<std::mutex> lock(qmu); id = sourceSession; }
+    JsonOut message; message.s("t","release");
+    if (!id.empty()) message.s("_control_session",id);
+    direct::send(message.str());
+}
+
+bool receiving() { return receiverOn(); }
+uint64_t receiveEpoch() { return receiverState.load() >> 1; }
+
 void enter(double nx, double ny) {
-    controlled = true;
+    const auto next = ((receiverState.load() >> 1) + 1) << 1;
+    receiverState = next | 1;
     quietUntil = nowMs() + 400;
     move(nx, ny);
 }
@@ -462,7 +686,7 @@ void leave() {
     wheelX.value = wheelY.value = 0;
     for (uint32_t k : std::set<uint32_t>(heldKeys)) key(k, false);
     for (int b : std::set<int>(heldButtons)) button(b, false);
-    controlled = false;
+    receiverState.fetch_and(~uint64_t(1));
     quietUntil = nowMs() + 400;
 }
 }  // namespace input

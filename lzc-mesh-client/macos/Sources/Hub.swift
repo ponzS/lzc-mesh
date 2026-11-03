@@ -9,6 +9,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     private var closing = false
     private var identity: DeviceIdentity?
     private var lastMoveLog = Date.distantPast
+    private var inputGate = MeshInputGate()
+    private var activeControlID = "", receiveControlID = "", blockedControlID = "", sourceControlID = ""
     private lazy var direct = DirectTransport(hub: self)
     var input: MacInput!
     var clipboard: Clipboard!
@@ -71,6 +73,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func closed(_ why: String, status: Int?) {
+        sourceControlID = ""
         let s = AppState.shared
         let wasConnected = s.hubConnected
         task = nil
@@ -112,8 +115,12 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
 
     func send(_ obj: [String: Any]) {
         if !AppState.shared.operational && ["edge", "motion", "button", "wheel", "key", "clipboard", "layout", "forget"].contains(obj["t"] as? String ?? "") { return }
-        if direct.input(obj) { return }
-        sendRaw(obj)
+        var outgoing = obj
+        if !sourceControlID.isEmpty && ["motion", "key", "button", "wheel", "release"].contains(obj["t"] as? String ?? "") {
+            outgoing["_control_session"] = sourceControlID
+        }
+        if direct.input(outgoing) { return }
+        sendRaw(outgoing)
     }
 
     func sendRaw(_ obj: [String: Any]) {
@@ -136,10 +143,28 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         if s.authVerified && !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
+    func localActivity() {
+        let s = AppState.shared
+        guard s.operational, s.controlled else { return }
+        let id = receiveControlID.isEmpty ? activeControlID : receiveControlID
+        mesh_input_gate_cancel(&inputGate)
+        blockedControlID = id
+        s.controlled = false
+        input.localTakeover()
+        if !id.isEmpty { send(["t": "local_activity", "control_id": id]) }
+        s.log("检测到本机实体输入，已收回控制并释放远程按键和按钮")
+        s.updateControlStatus()
+    }
+
     func handle(_ o: [String: Any]) {
         let s = AppState.shared
         let t = o["t"] as? String ?? ""
         let x = o["x"] as? Double ?? 0.5, y = o["y"] as? Double ?? 0.5
+        let scope = o["_control_session"] as? String ?? ""
+        let begin = t == "direct_active" && !(o["source"] as? String ?? "").isEmpty
+        let accepted = scope.withCString { begin ? mesh_input_gate_begin(&inputGate, $0) : mesh_input_gate_accept(&inputGate, $0) }
+        guard accepted else { return }
+        if scope.isEmpty && !blockedControlID.isEmpty && blockedControlID == activeControlID && ["capture", "enter", "move", "button", "key", "wheel"].contains(t) { return }
         if !s.operational && ["capture", "enter", "move", "button", "wheel", "key", "clipboard", "files"].contains(t) { return }
         switch t {
         case "device_challenge":
@@ -179,6 +204,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             let active = o["active"] as? [String: Any]
             s.activeSource = active?["source"] as? String
             s.activeTarget = active?["target"] as? String
+            activeControlID = active?["control_id"] as? String ?? ""
+            if s.controlled && receiveControlID.isEmpty { receiveControlID = activeControlID }
             let settings = o["settings"] as? [String: Any]
             s.transportMode = settings?["transport_mode"] as? String ?? "auto"
             s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
@@ -194,17 +221,26 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             input.setEdges(left: o["left"] as? Bool ?? false, right: o["right"] as? Bool ?? false,
                            up: o["up"] as? Bool ?? false, down: o["down"] as? Bool ?? false)
         case "capture":
+            sourceControlID = scope
+            if s.controlled { input.leave() }
+            s.controlled = false
             s.captured = true
             s.log("开始控制其他设备")
             input.capture(true)
             s.updateControlStatus()
         case "release":
+            sourceControlID = ""
             s.captured = false
             input.capture(false)
             if o["warp"] as? Bool ?? false { input.warp(x, y) }
             s.log("控制已收回本机")
             s.updateControlStatus()
         case "enter":
+            sourceControlID = ""
+            // Undo source capture even during a fast reversal before receiving.
+            input.capture(false)
+            s.captured = false
+            receiveControlID = scope.isEmpty ? activeControlID : scope
             s.controlled = true
             s.log(String(format: "被远程控制：光标进入本机 (%.2f, %.2f)", x, y))
             input.enter(x, y)
@@ -215,19 +251,23 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.log("远程控制结束")
             s.updateControlStatus()
         case "move":
+            guard s.controlled else { return }
             input.move(x, y)
             if Date().timeIntervalSince(lastMoveLog) > 2 {
                 lastMoveLog = Date()
                 s.log(String(format: "收到远程光标 (%.3f, %.3f)", x, y))
             }
         case "button":
+            guard s.controlled else { return }
             input.button(o["button"] as? Int ?? 1, down: o["down"] as? Bool ?? false)
         case "wheel":
+            guard s.controlled else { return }
             input.wheel(o["dx"] as? Double ?? 0, o["dy"] as? Double ?? 0,
                         scrollSource: o["source"] as? String, phase: o["phase"] as? String,
                         momentumPhase: o["momentum_phase"] as? String,
                         stop: o["stop_x"] as? Bool == true || o["stop_y"] as? Bool == true)
         case "key":
+            guard s.controlled else { return }
             let code = UInt32(o["code"] as? Int ?? 0), down = o["down"] as? Bool ?? false
             input.key(code, down: down)
         case "clipboard":

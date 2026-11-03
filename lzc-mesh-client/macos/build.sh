@@ -26,6 +26,7 @@ mkdir -p "$HELPER/Contents/MacOS"
 lipo -create build/bluetooth-arm64 build/bluetooth-x86_64 -output "$HELPER/Contents/MacOS/LZC Mesh Bluetooth"
 cp BluetoothHelper/Info.plist "$HELPER/Contents/Info.plist"
 cp Info.plist "$APP/Contents/Info.plist"
+cp ../../LICENSE "$APP/Contents/Resources/LICENSE"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')
 codesign --force --sign "${IDENTITY:--}" "$HELPER"

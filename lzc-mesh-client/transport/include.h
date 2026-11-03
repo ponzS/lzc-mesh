@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "input_gate.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -18,3 +18,4 @@ rm -rf content
 mkdir -p content/web dist
 cp hub/target/x86_64-unknown-linux-musl/release/lzc-mesh-hub content/lzc-mesh-hub
 cp web/index.html web/style.css web/app.js content/web/
+cp ../LICENSE content/LICENSE

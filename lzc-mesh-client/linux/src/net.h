@@ -12,6 +12,7 @@ void net_send_button(int button, bool down);
 void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y);
 void net_send_key(uint32_t code, bool down);
 void net_send_release(void);
+void net_local_activity(void);
 void net_send_layout(const char *id, double x, double y);
 void net_send_forget(const char *id);
 void net_send_settings(bool swap);

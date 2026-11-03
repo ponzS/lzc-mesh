@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -53,6 +53,8 @@ struct Router {
     registered: bool,
     swap: bool,
     grant: Option<Grant>,
+    retired: VecDeque<String>,
+    hub_control: Value,
     lease: Instant,
     controlled: bool,
     legacy: bool,
@@ -106,6 +108,8 @@ pub async fn run(
         registered: false,
         swap: true,
         grant: None,
+        retired: VecDeque::new(),
+        hub_control: Value::Null,
         lease: now,
         controlled: false,
         legacy: false,
@@ -196,7 +200,8 @@ impl Router {
         }
     }
 
-    fn inject(&self, v: Value) {
+    fn inject(&self, mut v: Value) {
+        if let Some(g) = &self.grant { v["_control_session"] = json!(g.session); }
         self.cb.inject(v)
     }
     fn active_ui(&self, source: &str, target: &str) {
@@ -325,6 +330,7 @@ impl Router {
                 self.registered = false;
             }
             "state" => {
+                self.hub_control = v["active"].clone();
                 self.devices = serde_json::from_value(v["devices"].clone()).unwrap_or_default();
                 self.legacy = self.grant.is_none()
                     && (v["active"]["source"] == self.id || v["active"]["target"] == self.id);
@@ -405,6 +411,7 @@ impl Router {
                 let Ok(g) = serde_json::from_value::<Grant>(v) else {
                     return;
                 };
+                if self.retired.contains(&g.session) { return; }
                 if self
                     .grant
                     .as_ref()
@@ -563,6 +570,30 @@ impl Router {
             return;
         }
         let kind = v["t"].as_str().unwrap_or("").to_string();
+        if matches!(kind.as_str(), "motion" | "key" | "button" | "wheel" | "release") {
+            // Native capture queues outlive UI callbacks. Bind their input to
+            // the capture that produced it, not whichever grant is current by
+            // the time the worker dequeues it. Unscoped legacy callers remain
+            // compatible; updated native adapters always scope native capture.
+            if let Some(scope) = v.get("_control_session") {
+                if !self.grant.as_ref().is_some_and(|g| g.source == self.id && scope.as_str() == Some(g.session.as_str())) {
+                    return;
+                }
+                v.as_object_mut().unwrap().remove("_control_session");
+            }
+        }
+        if kind == "local_activity" {
+            let id = v["control_id"].as_str().unwrap_or("");
+            let valid = self.grant.as_ref().is_some_and(|g| g.session == id && g.source != self.id && self.controlled)
+                || (self.grant.is_none() && !id.is_empty() && self.hub_control["target"] == self.id && self.hub_control["control_id"] == id);
+            if valid {
+                self.cb.hub(json!({"t":"takeover","control_id":id}));
+                self.finish(false, false);
+                // Legacy receivers have no native grant to finish.
+                if self.legacy { self.inject(json!({"t":"leave"})); self.legacy = false; }
+            }
+            return;
+        }
         if kind == "edge" && self.grant.is_none() {
             let Some(me) = self.devices.iter().find(|d| d.id == self.id) else {
                 return;
@@ -600,7 +631,7 @@ impl Router {
             ),
             "release" => self.finish(false, true),
             "key" => {
-                let code = v["code"].as_u64().unwrap_or(0);
+                let Some(code) = integer_code(&v["code"], 767) else { return };
                 let down = v["down"].as_bool().unwrap_or(false);
                 if down {
                     self.held_keys.insert(code);
@@ -616,7 +647,8 @@ impl Router {
                 self.action(v);
             }
             "button" => {
-                let b = v["button"].as_u64().unwrap_or(1);
+                let Some(b) = integer_code(&v["button"], 8) else { return };
+                v["button"] = json!(b);
                 if v["down"].as_bool().unwrap_or(false) {
                     self.held_buttons.insert(b);
                 } else {
@@ -866,6 +898,9 @@ impl Router {
         }
     }
     fn receive(&mut self, peer: String, data: Wire, direct: bool) {
+        if let Wire::Input { input } = &data {
+            if self.retired.contains(&input.session) { return; }
+        }
         if !self.enabled
             || (direct
                 && (self.mode == "relay"
@@ -1063,21 +1098,23 @@ impl Router {
     }
     fn finish_at(&mut self, position: Option<(f64, f64)>, notify: bool) {
         let Some(g) = self.grant.take() else { return };
+        self.retired.push_back(g.session.clone());
+        if self.retired.len() > 256 { self.retired.pop_front(); }
         if notify {
             self.cb
                 .hub(json!({"t":"direct_stop","session":g.session,"warp":position.is_some()}));
         }
         if g.source == self.id {
             let (x, y) = position.unwrap_or((0.5, 0.5));
-            self.inject(json!({"t":"release","x":x,"y":y,"warp":position.is_some()}));
+            self.inject(json!({"t":"release","x":x,"y":y,"warp":position.is_some(),"_control_session":g.session}));
         }
         if self.controlled {
-            self.inject(json!({"t":"leave"}));
+            self.inject(json!({"t":"leave","_control_session":g.session}));
             self.controlled = false;
         }
         self.pending
             .retain(|(session, _, _), _| session != &g.session);
-        self.active_ui("", "");
+        self.inject(json!({"t":"direct_active","source":"","target":"","_control_session":g.session}));
         self.motion = None;
         self.last_motion = None;
         self.receivers.clear();
@@ -1343,6 +1380,14 @@ pub(crate) fn bluetooth_can_dial(id: &str, local: &Value, peer: &Peer) -> bool {
         remote["role"] == "listener"
             && (remote["connector"].as_bool() != Some(true) || local["role"] == "connector" || id < peer.id.as_str())
     })
+}
+
+// Native adapters must emit integer codes. Accept exactly integral legacy JSON
+// floats, but never truncate fractional/negative/out-of-range key/button values.
+fn integer_code(value: &Value, max: u64) -> Option<u64> {
+    if let Some(n) = value.as_u64() { return (n > 0 && n <= max).then_some(n); }
+    let n = value.as_f64()?;
+    (n.is_finite() && n >= 1.0 && n <= max as f64 && n.fract() == 0.0).then_some(n as u64)
 }
 
 fn valid_event(event: &Value) -> bool {

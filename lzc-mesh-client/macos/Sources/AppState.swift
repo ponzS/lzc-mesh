@@ -35,7 +35,7 @@ struct MeshDevice {
 /// Main-thread state shared by all components.
 final class AppState {
     static let shared = AppState()
-    static let version = "0.2.1"
+    static let version = "0.2.2"
 
     var status: [StatusKey: (Level, String)] = Dictionary(uniqueKeysWithValues: StatusKey.allCases.map { ($0, (.unknown, "检测中…")) })
     var deviceID: String

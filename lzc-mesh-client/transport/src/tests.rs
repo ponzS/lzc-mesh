@@ -1,6 +1,8 @@
 //! Real loopback QUIC and FFI exercises. The small test coordinator supplies
 //! already authenticated hub grants; it never substitutes a network transport.
 use super::*;
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
 use serde_json::{json, Value};
 use std::{
     sync::Mutex,
@@ -83,6 +85,11 @@ impl Pair {
                         "direct_alive" => {
                             for n in 0..2 {
                                 self.hub(n, json!({"t":"direct_lease","session":m["session"]}));
+                            }
+                        }
+                        "takeover" => {
+                            if n==1 && m["control_id"]=="test-session-1" {
+                                for side in 0..2 { self.hub(side,json!({"t":"direct_end","session":m["control_id"],"warp":true})); }
                             }
                         }
                         "direct_stop" => {

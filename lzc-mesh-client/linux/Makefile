@@ -1,9 +1,9 @@
 # 懒猫设备接力 (LZC Mesh) Linux client: GTK4 window, libsoup3 hub connection, Wayland input and clipboard.
 CC ?= gcc
-PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client xkbcommon cairo
+PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client wayland-cursor xkbcommon cairo
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -std=gnu11 $(shell pkg-config --cflags $(PKGS)) -Ibuild
 LDLIBS += $(shell pkg-config --libs $(PKGS)) -lm
-VERSION ?= 0.2.1
+VERSION ?= 0.2.2
 CFLAGS += -DLZC_MESH_VERSION=\"$(VERSION)\"
 
 PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-shell \
@@ -11,7 +11,7 @@ PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-
 	wlr-data-control-unstable-v1
 PROTO_H = $(PROTOCOLS:%=build/%-client-protocol.h)
 PROTO_C = $(PROTOCOLS:%=build/%-protocol.c)
-SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/wl_input.c src/config.c src/clipboard.c src/files.c src/tray.c src/autostart.c src/direct.c src/bluetooth.c src/identity.c
+SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/wl_input.c src/config.c src/clipboard.c src/files.c src/tray.c src/autostart.c src/direct.c src/bluetooth.c src/identity.c src/local_input.c
 OBJ = $(SRC:src/%.c=build/%.o) $(PROTO_C:.c=.o)
 
 TRANSPORT = ../transport/target/release/liblzc_mesh_transport.a
@@ -26,7 +26,7 @@ build/%-client-protocol.h: protocols/%.xml | build
 	wayland-scanner client-header $< $@
 build/%-protocol.c: protocols/%.xml | build
 	wayland-scanner private-code $< $@
-build/%.o: src/%.c $(PROTO_H) src/*.h ../transport/include.h | build
+build/%.o: src/%.c $(PROTO_H) src/*.h ../transport/include.h ../transport/input_gate.h | build
 	$(CC) $(CFLAGS) -c $< -o $@
 build/%-protocol.o: build/%-protocol.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -46,7 +46,7 @@ pkg:
 	rm -rf build/pkg && mkdir -p build/pkg/src/linux ../dist
 	cp -r Makefile src protocols lzc-mesh.desktop lzc-mesh.png host-bluetooth.py BLUETOOTH.md build/pkg/src/linux/
 	mkdir -p build/pkg/src/transport
-	cp -r ../transport/Cargo.toml ../transport/Cargo.lock ../transport/include.h ../transport/src build/pkg/src/transport/
+	cp -r ../transport/Cargo.toml ../transport/Cargo.lock ../transport/include.h ../transport/input_gate.h ../transport/src build/pkg/src/transport/
 	cp pkg/PKGBUILD build/pkg/
 	cp ../../LICENSE build/pkg/LICENSE
 	cd build/pkg && sed -i 's#install -Dm0644 ../../LICENSE#install -Dm0644 "$$startdir/LICENSE"#' PKGBUILD && \

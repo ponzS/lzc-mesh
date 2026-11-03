@@ -4,7 +4,7 @@
 
 Control several computers in front of you (macOS, Windows, Omarchy) with one keyboard and trackpad/mouse. Only the cursor and keyboard are synced; no screen is streamed. It also offers a shared clipboard (text, on by default) and file sharing across devices. Devices talk to each other over the LazyCat network.
 
-**The Linux client supports Omarchy (Hyprland) only. Other Linux distributions, desktop environments and Wayland compositors are not supported.** References to the Linux client below mean the Omarchy client.
+**Linux currently supports Omarchy (Hyprland) only. Other Linux distributions, desktop environments and Wayland compositors are not supported.** References to the Linux client below mean the Omarchy client.
 
 ## Layout
 
@@ -87,6 +87,8 @@ Output goes to `lzc-mesh-lpk/dist/` and `lzc-mesh-client/dist/`. The macOS `buil
 - Linux: Omarchy's Hyprland environment only. Sway, other desktop environments and other distributions are not supported.
 
 ## Status
+
+0.2.2 fixes the intermittent lower-left cursor pinning or invisible cursor when a physical Windows mouse enters Mac. Capture now waits for its entry relocation, uses actual cursor displacement, and accommodates 32-bit event markers in the Windows input stack. The user confirmed successful Windows ↔ Mac manual retesting. It also strengthens native role handoff, local physical takeover and stale-session isolation, and fixes Omarchy key/button integer encoding without changing the established Mac/Omarchy displacement or scrolling algorithms. Linux currently supports Omarchy only. Full six-direction physical-input and Bluetooth hardware acceptance remains incomplete; see the [validation record](spec-tests/input-handoff-status.md).
 
 0.2.1 adds Windows transport parity, background hub sends, cross-platform client dormancy, and device credential approval/revocation. The user confirmed that the deployed update passed functional testing. The Linux client supports Omarchy only. This does not establish acceptance of unperformed Bluetooth hardware tests.
 

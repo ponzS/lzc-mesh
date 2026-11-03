@@ -1,4 +1,4 @@
-// Wayland input for wlroots-style compositors (Hyprland, Sway, river...).
+// Wayland input for Omarchy's Hyprland session.
 //
 // Approach borrowed from lightos-remote-desktop's Wayland backend
 // (zwlr_virtual_pointer + zwp_virtual_keyboard with an xkb evdev keymap for
@@ -17,11 +17,13 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include "app.h"
 #include "clipboard.h"
 #include "net.h"
+#include "local_input.h"
 #include "wl_input.h"
 #include "pointer_coords.h"
 
@@ -63,6 +65,8 @@ static struct {
     struct wl_seat *seat;
     struct wl_pointer *pointer;
     struct wl_keyboard *keyboard;
+    struct wl_cursor_theme *cursor_theme;
+    struct wl_surface *cursor_surface;
     struct zwlr_layer_shell_v1 *layer_shell;
     struct zxdg_output_manager_v1 *xdg_output_manager;
     struct zwlr_virtual_pointer_manager_v1 *vp_manager;
@@ -258,6 +262,19 @@ static void hide_cursor(void) {
     if (W.pointer) wl_pointer_set_cursor(W.pointer, W.enter_serial, NULL, 0, 0);
 }
 
+static void show_cursor(void) {
+    if (!W.pointer || !W.shm || !W.compositor) return;
+    if (!W.cursor_theme) W.cursor_theme=wl_cursor_theme_load(NULL,24,W.shm);
+    struct wl_cursor *cursor=W.cursor_theme ? wl_cursor_theme_get_cursor(W.cursor_theme,"left_ptr") : NULL;
+    if (!cursor || !cursor->image_count) return;
+    struct wl_cursor_image *image=cursor->images[0];
+    if (!W.cursor_surface) W.cursor_surface=wl_compositor_create_surface(W.compositor);
+    wl_pointer_set_cursor(W.pointer,W.enter_serial,W.cursor_surface,image->hotspot_x,image->hotspot_y);
+    wl_surface_attach(W.cursor_surface,wl_cursor_image_get_buffer(image),0,0);
+    wl_surface_damage(W.cursor_surface,0,0,image->width,image->height);
+    wl_surface_commit(W.cursor_surface);
+}
+
 static void maybe_edge(void) {
     Surf *s = W.pointer_on;
     if (!s || s->dir < 0 || app.captured || app.controlled || !app_operational() || !app.sharing_enabled) return;
@@ -278,6 +295,7 @@ static void p_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_su
     W.px = wl_fixed_to_double(sx);
     W.py = wl_fixed_to_double(sy);
     if (W.pointer_on && W.pointer_on == W.capture) hide_cursor();
+    else if (W.pointer_on) show_cursor();
     maybe_edge();
 }
 static void p_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *surface) { W.pointer_on = NULL; }
@@ -341,7 +359,15 @@ static const struct zwp_relative_pointer_v1_listener relative_listener = {rel_mo
 // ---------------------------------------------------------------- keyboard (local, while capturing)
 
 static void k_keymap(void *d, struct wl_keyboard *k, uint32_t format, int32_t fd, uint32_t size) { close(fd); }
-static void k_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s, struct wl_array *keys) {}
+static void k_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s, struct wl_array *keys) {
+    if (!app.captured) return;
+    uint32_t *key;
+    wl_array_for_each(key,keys) {
+        if (*key==KEY_LEFTCTRL || *key==KEY_RIGHTCTRL || *key==KEY_LEFTALT || *key==KEY_RIGHTALT ||
+            *key==KEY_LEFTSHIFT || *key==KEY_RIGHTSHIFT || *key==KEY_LEFTMETA || *key==KEY_RIGHTMETA)
+            net_send_key(*key,true);
+    }
+}
 static void k_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s) {}
 static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t t, uint32_t key, uint32_t state) {
     if (app.captured) net_send_key(key, state == WL_KEYBOARD_KEY_STATE_PRESSED);
@@ -452,7 +478,7 @@ void wl_input_init(void) {
     W.held_buttons = g_hash_table_new(NULL, NULL);
     W.display = wl_display_connect(NULL);
     if (!W.display) {
-        app_set_status(S_INPUT, ST_ERROR, "未检测到 Wayland 会话（WAYLAND_DISPLAY 未设置），当前仅支持 wlroots 类合成器");
+        app_set_status(S_INPUT, ST_ERROR, "未检测到 Wayland 会话（WAYLAND_DISPLAY 未设置），Linux 暂时仅支持 Omarchy（Hyprland）");
         return;
     }
     W.registry = wl_display_get_registry(W.display);
@@ -471,7 +497,7 @@ void wl_input_init(void) {
     clipboard_start(W.seat);
     bool kb = W.vk_manager && W.seat;
     if (missing->len) {
-        app_set_status(S_INPUT, ST_ERROR, "合成器缺少协议：%s。请使用 Hyprland / Sway 等 wlroots 合成器", missing->str);
+        app_set_status(S_INPUT, ST_ERROR, "合成器缺少协议：%s。Linux 暂时仅支持 Omarchy（Hyprland）", missing->str);
     } else if (!kb) {
         app_set_status(S_INPUT, ST_ERROR, "无法创建虚拟键盘（xkb 键盘布局编译失败）");
     } else {
@@ -567,6 +593,8 @@ void wl_input_warp(double nx, double ny) {
 
 void wl_input_enter(double nx, double ny) {
     W.quiet_until = g_get_monotonic_time() + 400 * 1000;
+    if (!local_input_start(net_local_activity))
+        app_set_status(S_INPUT,ST_WARN,"虚拟输入已就绪；本机自动接管不可用：缺少实体键鼠读取权限");
     abs_move(nx, ny);
 }
 
@@ -647,6 +675,7 @@ void wl_input_key(uint32_t code, bool down) {
 
 // Releases everything the remote side still holds so no key or button stays stuck.
 void wl_input_leave(void) {
+    local_input_stop();
     if (!W.held_keys) return;
     if (W.vpointer && (W.injected_axis[0] || W.injected_axis[1])) {
         zwlr_virtual_pointer_v1_axis_source(W.vpointer, W.injected_source);
@@ -669,4 +698,9 @@ void wl_input_leave(void) {
     if (W.vpointer) zwlr_virtual_pointer_v1_frame(W.vpointer);
     W.quiet_until = g_get_monotonic_time() + 400 * 1000;
     flush();
+}
+
+void wl_input_local_takeover(void) {
+    wl_input_leave();
+    W.quiet_until = 0;
 }

@@ -54,6 +54,7 @@ struct Active {
     /// Physical keys held on the controlling keyboard, before any remapping.
     src_keys: HashSet<u32>,
     session: Option<String>,
+    control_id: String,
 }
 
 pub struct Room {
@@ -157,6 +158,13 @@ impl Room {
             ClientMsg::DeviceProof{signature} => self.device_proof(conn,signature),
             ClientMsg::DeviceTrust{id,fingerprint,approved} => self.device_trust(conn,id,fingerprint,approved),
             ClientMsg::Ping => self.reply(conn, HubMsg::Pong),
+            ClientMsg::Takeover { control_id } => {
+                if let Some(id) = device {
+                    if self.sharing_ids().contains(id.as_str()) && self.active.as_ref().is_some_and(|a| a.target == id && a.control_id == control_id) {
+                        self.stop(true);
+                    }
+                }
+            }
             ClientMsg::Layout { id, x, y } => self.move_device(&id, x, y),
             ClientMsg::Forget { id } => self.forget(conn, &id),
             ClientMsg::DeviceEnabled { id, enabled } => {
@@ -402,7 +410,7 @@ impl Room {
                 version: d.version.clone(),
             })
             .collect();
-        let active = self.active.as_ref().map(|a| ActiveView { source: a.source.clone(), target: a.target.clone() });
+        let active = self.active.as_ref().map(|a| ActiveView { source: a.source.clone(), target: a.target.clone(), control_id: a.control_id.clone() });
         let state = HubMsg::State { devices: devices.clone(), active, settings: self.snapshot.settings.clone() };
         for c in self.conns.values() {
             if !c.manager && !self.trusted_conn(c) {
@@ -521,7 +529,7 @@ impl Room {
         if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut random)).is_err() { return; }
         let session: String = random.iter().map(|b| format!("{b:02x}")).collect();
         let (x, y) = entry_point(&target, dir, gx, gy);
-        self.active = Some(Active { source: from.into(), target: target.id.clone(), x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: HashSet::new(), session: Some(session.clone()) });
+        self.active = Some(Active { source: from.into(), target: target.id.clone(), x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: HashSet::new(), session: Some(session.clone()), control_id: session.clone() });
         self.direct_broadcast(HubMsg::DirectSession { session, source: from.into(), target: target.id, x, y });
         self.broadcast();
     }
@@ -600,6 +608,7 @@ impl Room {
         };
         let Some(target) = layout::neighbour(self.online(), &src, dir, gx, gy).cloned() else { return };
         let (x, y) = entry_point(&target, dir, gx, gy);
+        let Some(control_id) = fresh_control_id() else { return };
         self.active = Some(Active {
             source: from.to_string(),
             target: target.id.clone(),
@@ -609,6 +618,7 @@ impl Room {
             buttons: HashSet::new(),
             src_keys: HashSet::new(),
             session: None,
+            control_id,
         });
         let (nx, ny) = norm(&target, x, y);
         self.send_to(from, HubMsg::Capture);
@@ -662,7 +672,7 @@ impl Room {
             let (nx, ny) = norm(&next, x, y);
             self.send_to(&next.id, HubMsg::Enter { x: nx, y: ny });
             // Keys still held on the controlling keyboard are re-pressed on the new target lazily by the user.
-            self.active = Some(Active { source: a.source, target: next.id, x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: a.src_keys, session: None });
+            self.active = Some(Active { source: a.source, target: next.id, x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: a.src_keys, session: None, control_id: a.control_id });
         }
         self.broadcast();
     }
@@ -671,6 +681,13 @@ impl Room {
     pub fn devices(&self) -> &BTreeMap<String, Device> {
         &self.snapshot.devices
     }
+}
+
+fn fresh_control_id() -> Option<String> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0u8; 32];
+    SystemRandom::new().fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Where the cursor appears on `d` after crossing its edge opposite to `dir`.
@@ -689,6 +706,9 @@ fn entry_point(d: &Device, dir: Dir, gx: f64, gy: f64) -> (f64, f64) {
 #[cfg(test)]
 #[path = "device_tests.rs"]
 mod device_tests;
+#[cfg(test)]
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
 #[cfg(test)]
 #[path = "trust_tests.rs"]
 mod trust_tests;

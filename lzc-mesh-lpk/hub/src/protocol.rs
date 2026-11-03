@@ -102,6 +102,8 @@ pub enum ClientMsg {
     Key { code: u32, down: bool },
     /// The controlling device gave up control (hotkey, lost event tap...).
     Release,
+    /// A verified receiver observed real local input. Bound to the active control ID.
+    Takeover { control_id: String },
     /// Move a device in the layout; the hub snaps it to its neighbours.
     Layout { id: String, x: f64, y: f64 },
     /// Remove an offline device from the layout.
@@ -191,6 +193,7 @@ pub struct FileView {
 pub struct ActiveView {
     pub source: String,
     pub target: String,
+    pub control_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

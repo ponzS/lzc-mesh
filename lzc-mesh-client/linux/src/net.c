@@ -11,6 +11,7 @@
 #include "net.h"
 #include "wl_input.h"
 #include "identity.h"
+#include "input_wire.h"
 
 static SoupSession *session;
 static SoupWebsocketConnection *ws;
@@ -32,6 +33,11 @@ static bool message_allowed(JsonObject *o) {
 
 static void send_builder(JsonBuilder *b) {
     JsonNode *root = json_builder_get_root(b);
+    JsonObject *object = json_node_get_object(root);
+    const char *type = json_object_get_string_member_with_default(object,"t","");
+    if (app.source_control_id && *app.source_control_id &&
+        (!strcmp(type,"motion") || !strcmp(type,"key") || !strcmp(type,"button") || !strcmp(type,"wheel") || !strcmp(type,"release")))
+        json_object_set_string_member(object,"_control_session",app.source_control_id);
     if (ws && soup_websocket_connection_get_state(ws) == SOUP_WEBSOCKET_STATE_OPEN && message_allowed(json_node_get_object(root))) {
         JsonGenerator *gen = json_generator_new(); json_generator_set_root(gen, root);
         char *text = json_generator_to_data(gen, NULL);
@@ -73,7 +79,7 @@ void net_send_motion(double dx, double dy) {
     uint64_t captured=direct_now_us();JsonBuilder *b=msg("motion");num(b,"dx",dx);num(b,"dy",dy);
     json_builder_set_member_name(b,"_capture_us");json_builder_add_int_value(b,(gint64)captured);done(b);
 }
-void net_send_button(int button, bool down) { JsonBuilder *b = msg("button"); num(b, "button", button); boolean(b, "down", down); done(b); }
+void net_send_button(int button, bool down) { done(input_wire_event("button","button",button,down)); }
 void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool stop_y) {
     JsonBuilder *b = msg("wheel");
     num(b, "dx", dx); num(b, "dy", dy);
@@ -82,7 +88,7 @@ void net_send_wheel(double dx, double dy, const char *source, bool stop_x, bool 
     if (stop_y) boolean(b, "stop_y", true);
     done(b);
 }
-void net_send_key(uint32_t code, bool down) { JsonBuilder *b = msg("key"); num(b, "code", code); boolean(b, "down", down); done(b); }
+void net_send_key(uint32_t code, bool down) { done(input_wire_event("key","code",code,down)); }
 void net_send_release(void) { done(msg("release")); }
 void net_send_layout(const char *id, double x, double y) { JsonBuilder *b = msg("layout"); str(b, "id", id); num(b, "x", x); num(b, "y", y); done(b); }
 void net_send_forget(const char *id) { JsonBuilder *b = msg("forget"); str(b, "id", id); done(b); }
@@ -124,6 +130,19 @@ static void update_control_status(void) {
     else app_set_status(S_CONTROL, ST_UNKNOWN, "空闲：把光标移出屏幕边缘即可控制相邻设备");
 }
 
+void net_local_activity(void) {
+    if (!app_operational() || !app.controlled) return;
+    char *id = g_strdup(app.receive_control_id ? app.receive_control_id : app.active_control_id);
+    mesh_input_gate_cancel(&app.input_gate);
+    g_free(app.blocked_control_id); app.blocked_control_id = g_strdup(id);
+    app.controlled = false;
+    wl_input_local_takeover();
+    if (id && *id) { JsonBuilder *b = msg("local_activity"); str(b,"control_id",id); done(b); }
+    g_free(id);
+    app_log("检测到本机实体输入，已收回控制并释放远程按键和按钮");
+    update_control_status();
+}
+
 static void on_state(JsonObject *o) {
     g_ptr_array_set_free_func(app.devices, mesh_device_free);
     g_ptr_array_set_size(app.devices, 0);
@@ -153,11 +172,16 @@ static void on_state(JsonObject *o) {
     }
     g_clear_pointer(&app.active_source, g_free);
     g_clear_pointer(&app.active_target, g_free);
+    g_clear_pointer(&app.active_control_id, g_free);
     JsonNode *active = json_object_get_member(o, "active");
     if (active && JSON_NODE_HOLDS_OBJECT(active)) {
         JsonObject *a = json_node_get_object(active);
         app.active_source = g_strdup(json_object_get_string_member_with_default(a, "source", ""));
         app.active_target = g_strdup(json_object_get_string_member_with_default(a, "target", ""));
+        app.active_control_id = g_strdup(json_object_get_string_member_with_default(a,"control_id",""));
+        if (app.controlled && (!app.receive_control_id || !*app.receive_control_id)) {
+            g_free(app.receive_control_id); app.receive_control_id = g_strdup(app.active_control_id);
+        }
     }
     JsonNode *settings = json_object_get_member(o, "settings");
     if (settings && JSON_NODE_HOLDS_OBJECT(settings)) {
@@ -182,6 +206,11 @@ void net_inject(JsonObject *o) {
     const char *t = json_object_get_string_member_with_default(o, "t", "");
     double x = json_object_get_double_member_with_default(o, "x", 0.5);
     double y = json_object_get_double_member_with_default(o, "y", 0.5);
+    const char *scope = json_object_get_string_member_with_default(o,"_control_session","");
+    bool begin = !strcmp(t,"direct_active") && *json_object_get_string_member_with_default(o,"source","");
+    if (!(begin ? mesh_input_gate_begin(&app.input_gate,scope) : mesh_input_gate_accept(&app.input_gate,scope))) return;
+    if (!*scope && app.blocked_control_id && *app.blocked_control_id && !g_strcmp0(app.blocked_control_id,app.active_control_id) &&
+        (!strcmp(t,"capture") || !strcmp(t,"enter") || !strcmp(t,"move") || !strcmp(t,"key") || !strcmp(t,"button") || !strcmp(t,"wheel"))) return;
     if(!strcmp(t,"device_challenge")) {
         const char *user=json_object_get_string_member_with_default(o,"user","");
         const char *nonce=json_object_get_string_member_with_default(o,"nonce","");
@@ -220,17 +249,25 @@ void net_inject(JsonObject *o) {
                            json_object_get_boolean_member_with_default(o, "up", false),
                            json_object_get_boolean_member_with_default(o, "down", false));
     } else if (!strcmp(t, "capture")) {
+        g_free(app.source_control_id); app.source_control_id = g_strdup(scope);
+        if (app.controlled) wl_input_leave();
+        app.controlled = false;
         app.captured = true;
         app_log("开始控制其他设备");
         wl_input_capture(true);
         update_control_status();
     } else if (!strcmp(t, "release")) {
+        g_clear_pointer(&app.source_control_id,g_free);
         app.captured = false;
         wl_input_capture(false);
         if (json_object_get_boolean_member_with_default(o, "warp", false)) wl_input_warp(x, y);
         app_log("控制已收回本机");
         update_control_status();
     } else if (!strcmp(t, "enter")) {
+        g_clear_pointer(&app.source_control_id,g_free);
+        if (app.captured) wl_input_capture(false);
+        app.captured = false;
+        g_free(app.receive_control_id); app.receive_control_id = g_strdup(*scope ? scope : app.active_control_id);
         app.controlled = true;
         app_log("被远程控制：光标进入本机 (%.2f, %.2f)", x, y);
         wl_input_enter(x, y);
@@ -240,7 +277,7 @@ void net_inject(JsonObject *o) {
         wl_input_leave();
         app_log("远程控制结束");
         update_control_status();
-    } else if (!strcmp(t, "move")) {
+    } else if (!strcmp(t, "move") && app.controlled) {
         wl_input_move(x, y);
         if (json_object_has_member(o,"_motion_trace")) direct_applied(json_object_get_object_member(o,"_motion_trace"));
         gint64 now = g_get_monotonic_time();
@@ -248,15 +285,15 @@ void net_inject(JsonObject *o) {
             last_motion_log = now;
             app_log("收到远程光标 (%.3f, %.3f)", x, y);
         }
-    } else if (!strcmp(t, "button")) {
+    } else if (!strcmp(t, "button") && app.controlled) {
         wl_input_button((int)json_object_get_int_member_with_default(o, "button", 1), json_object_get_boolean_member_with_default(o, "down", false));
-    } else if (!strcmp(t, "wheel")) {
+    } else if (!strcmp(t, "wheel") && app.controlled) {
         wl_input_wheel(json_object_get_double_member_with_default(o, "dx", 0),
                        json_object_get_double_member_with_default(o, "dy", 0),
                        json_object_get_string_member_with_default(o, "source", NULL),
                        json_object_get_boolean_member_with_default(o, "stop_x", false),
                        json_object_get_boolean_member_with_default(o, "stop_y", false));
-    } else if (!strcmp(t, "key")) {
+    } else if (!strcmp(t, "key") && app.controlled) {
         uint32_t code = (uint32_t)json_object_get_int_member_with_default(o, "code", 0);
         bool down = json_object_get_boolean_member_with_default(o, "down", false);
         wl_input_key(code, down);
@@ -287,6 +324,7 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *data, gpoi
 }
 
 static void reset_roles(void) {
+    g_clear_pointer(&app.source_control_id,g_free);
     if (app.captured) wl_input_capture(false);
     if (app.controlled) wl_input_leave();
     app.captured = app.controlled = false;

@@ -4,7 +4,7 @@
 
 用一套键盘和触控板/鼠标控制面前的多台电脑（macOS、Windows、Omarchy）。只同步光标和键盘，不传画面。还支持共享剪贴板（文本，默认开启）和跨设备文件共享。设备之间通过懒猫网络通信。
 
-**Linux 客户端仅支持 Omarchy（Hyprland），其他 Linux 发行版、桌面环境及 Wayland 合成器不在支持范围内。** 下文中的 Linux 客户端均指 Omarchy 客户端。
+**Linux 暂时仅支持 Omarchy（Hyprland），其他 Linux 发行版、桌面环境及 Wayland 合成器不在支持范围内。** 下文中的 Linux 客户端均指 Omarchy 客户端。
 
 ## 目录
 
@@ -87,6 +87,8 @@ cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 - Linux：仅支持 Omarchy 自带的 Hyprland 环境；不支持 Sway、其他桌面环境或其他发行版。
 
 ## 状态
+
+0.2.2 修复 Windows 实体鼠标跨入 Mac 后偶发固定左下角或不可见的问题：入口定位确认后再捕获，按实际光标计算位移，兼容当前 Windows 输入栈的 32 位事件标记。用户已确认本次 Windows ↔ Mac 手动复测正常。另加强三端角色交接、实体输入接管和旧会话隔离，修复 Omarchy 键盘／鼠标按钮的整数编码；保留原 Mac／Omarchy 位移和滚动算法。Linux 暂时仅支持 Omarchy。六方向完整实体键鼠与蓝牙硬件验收仍未全部完成，详见[验证记录](spec-tests/input-handoff-status.md)。
 
 0.2.1 包含 Windows 多通道能力对齐、中枢后台发送隔离、三端客户端休眠及设备凭证首次批准/撤销。本轮部署后的功能测试已获用户确认通过；Linux 客户端仅支持 Omarchy。此确认不扩大为未执行的蓝牙硬件专项验收。
 

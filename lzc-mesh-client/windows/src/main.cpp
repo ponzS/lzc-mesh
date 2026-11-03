@@ -192,6 +192,11 @@ void onProbe(Probe *p) {
 void onInputMessage(const Json &o) {
     const auto t = o["t"].str();
     const double x = o["x"].num(0.5), y = o["y"].num(0.5);
+    const auto scope = o["_control_session"].str();
+    const bool begin = t == "direct_active" && !o["source"].str().empty();
+    if (!(begin ? mesh_input_gate_begin(&g.inputGate, scope.c_str()) : mesh_input_gate_accept(&g.inputGate, scope.c_str()))) return;
+    if (scope.empty() && !g.blockedControlId.empty() && g.blockedControlId == g.activeControlId &&
+        (t == "enter" || t == "capture" || t == "move" || t == "key" || t == "button" || t == "wheel")) return;
     if (t == "direct_active") {
         g.activeSource = o["source"].str(); g.activeTarget = o["target"].str();
         updateControlStatus();
@@ -209,21 +214,26 @@ void onInputMessage(const Json &o) {
     } else if (!g.operational() || !g.inputEnabled || !g.sharingEnabled) {
         return;
     } else if (t == "capture") {
-        g.captured = true; input::capture(true);
+        if (g.controlled) input::leave();
+        g.controlled = false;
+        g.captured = true; input::capture(true, scope);
         logLine(L"开始控制其他设备"); updateControlStatus();
     } else if (t == "enter") {
+        if (g.captured) input::capture(false);
+        g.captured = false;
+        g.receiveControlId = scope.empty() ? g.activeControlId : scope;
         g.controlled = true; input::enter(x, y);
         logLine(fmt(L"被远程控制：光标进入本机 (%.2f, %.2f)", x, y)); updateControlStatus();
-    } else if (t == "move" && (g.controlled || g.activeTarget == g.deviceId)) {
+    } else if (t == "move" && g.controlled && input::receiving()) {
         input::move(x, y);
         if (GetTickCount64() - lastMoveLog > 2000) {
             lastMoveLog = GetTickCount64(); logLine(fmt(L"收到远程光标 (%.3f, %.3f)", x, y));
         }
-    } else if (t == "button" && g.controlled) {
+    } else if (t == "button" && g.controlled && input::receiving()) {
         input::button((int)o["button"].num(1), o["down"].boolean());
-    } else if (t == "wheel" && g.controlled) {
+    } else if (t == "wheel" && g.controlled && input::receiving()) {
         input::wheel(o["dx"].num(), o["dy"].num());
-    } else if (t == "key" && g.controlled) {
+    } else if (t == "key" && g.controlled && input::receiving()) {
         input::key((uint32_t)o["code"].num(), o["down"].boolean());
     }
 }
@@ -263,6 +273,8 @@ void onHubText(const std::string &text) {
         }
         g.activeSource = o["active"]["source"].str();
         g.activeTarget = o["active"]["target"].str();
+        g.activeControlId = o["active"]["control_id"].str();
+        if (g.controlled && g.receiveControlId.empty()) g.receiveControlId = g.activeControlId;
         g.swapCmdCtrl = o["settings"]["swap_cmd_ctrl"].boolean(true);
         g.nativeProtocol = o["settings"]["transport_mode"].type == Json::Str;
         g.transportMode = o["settings"]["transport_mode"].str("auto");
@@ -416,7 +428,7 @@ void setSharing(bool on) {
     saveConfig();
     input::setSharing(g.operational() && on && g.inputEnabled);
     // Give the cursor back at once if this PC is controlling another device.
-    if (!on && g.captured) direct::send(JsonOut().s("t", "release").str());
+    if (!on && g.captured) input::releaseRemote();
     if (!on && g.controlled) { input::leave(); g.controlled = false; }
     hubws::send(JsonOut().s("t", "sharing").b("enabled", on).str());
     logLine(on ? L"键鼠共享已开启" : L"键鼠共享已暂停");
@@ -608,10 +620,23 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_DIRECT: direct::drain(); return 0;
     case WM_APP_INPUT:
         if (!g.operational()) return 0;
-        if (w == 3) {
-            logLine(L"输入队列超限，已安全收回控制");
+        if (w == 4) {
+            if (!g.controlled || (uint64_t)l != input::receiveEpoch()) { input::completeLocalActivity((uint64_t)l,false); return 0; }
+            const auto id = g.receiveControlId;
+            mesh_input_gate_cancel(&g.inputGate);
+            g.blockedControlId = id;
+            g.controlled = false;
+            input::leave();
+            if (!id.empty()) direct::send(JsonOut().s("t", "local_activity").s("control_id", id).str());
+            input::completeLocalActivity((uint64_t)l,true);
+            logLine(L"检测到本机实体输入，已收回控制并释放远程按键和按钮");
+            updateControlStatus();
+        }
+        else if (w == 3) {
+            if ((uint64_t)l != input::captureGeneration()) return 0;
+            logLine(L"输入捕获未就绪或队列超限，已安全收回控制");
+            input::releaseRemote();
             g.captured = false; input::capture(false); updateControlStatus();
-            direct::send(JsonOut().s("t", "release").str());
         }
         else if (w == 1) setStatus(S_INPUT, L_OK, input::isElevated() ? L"输入钩子与 SendInput 就绪（管理员权限）" : L"输入钩子与 SendInput 就绪（普通权限；管理员窗口需提权）");
         else if (w == 0) setStatus(S_INPUT, L_ERROR, fmt(L"无法安装全局输入钩子（%lu），请以管理员身份运行或检查安全软件拦截", GetLastError()));
