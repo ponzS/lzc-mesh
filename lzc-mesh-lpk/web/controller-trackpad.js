@@ -3,9 +3,10 @@
 // Touch Events provide atomic finger snapshots; separate pointermove events would
 // turn finger arrival/lift into centroid jumps and distort scroll velocity.
 const TAP_TIME = 250, TAP_SLOP = 6, DOUBLE_TIME = 300, DOUBLE_SLOP = 30
-const SCROLL_UNIT = 12, DECAY = 0.994, MIN_SPEED = 0.02
+const SCROLL_UNIT = 12, DECAY = 0.995, MIN_SPEED = 0.02, EDGE_SCROLL_WIDTH = 68
 const center = points => ({x:points.reduce((n,p)=>n+p.x,0)/points.length, y:points.reduce((n,p)=>n+p.y,0)/points.length})
 const distance = (a,b) => Math.hypot(a.x-b.x,a.y-b.y)
+const scrollGain = (dist,dt) => 1 + Math.min(3.2, Math.max(0, dist / Math.max(4, dt) - 0.22) * 1.45)
 
 export function createTrackpadGestures({ready, send, now=()=>performance.now(), requestFrame=requestAnimationFrame, cancelFrame=cancelAnimationFrame}) {
   let gesture=null, lastTap=null, held=false, scroll=false, history=[]
@@ -44,7 +45,7 @@ export function createTrackpadGestures({ready, send, now=()=>performance.now(), 
     const speed=Math.hypot(vx,vy)
     if (speed<0.08) return
     // Bound accidental outliers without altering the direction of a diagonal.
-    if (speed>3) {vx*=3/speed;vy*=3/speed}
+    if (speed>10) {vx*=10/speed;vy*=10/speed}
     let previous=now(),elapsed=0,first=true
     momentum=true
     function step(time) {
@@ -58,7 +59,7 @@ export function createTrackpadGestures({ready, send, now=()=>performance.now(), 
       const decay=DECAY**dt, integral=(decay-1)/Math.log(DECAY)
       wheel(vx*integral,vy*integral,"ended",first?"began":"changed")
       first=false;vx*=decay;vy*=decay
-      if (Math.hypot(vx,vy)<MIN_SPEED || elapsed>=1500) {stopMomentum();return}
+      if (Math.hypot(vx,vy)<MIN_SPEED || elapsed>=1800) {stopMomentum();return}
       momentumFrame=requestFrame(step)
     }
     momentumFrame=requestFrame(step)
@@ -76,11 +77,13 @@ export function createTrackpadGestures({ready, send, now=()=>performance.now(), 
       const interrupted=momentum
       stopMomentum()
       const p=center(points)
-      const second=!interrupted && count===1 && lastTap && time-lastTap.t<=DOUBLE_TIME && distance(p,lastTap)<=DOUBLE_SLOP
-      gesture={count,max:count,start:time,origin:p,previous:p,points:new Map(points.map(p=>[p.id,p])),mode:count===1?"point":count===2?"two":"three",tap:!interrupted,moved:false,second:!!second}
+      const edge=count===1 && !!points[0].edge
+      const second=!interrupted && count===1 && !edge && lastTap && time-lastTap.t<=DOUBLE_TIME && distance(p,lastTap)<=DOUBLE_SLOP
+      gesture={count,max:count,start:time,lastTime:time,origin:p,previous:p,scrollPos:{x:0,y:0},points:new Map(points.map(p=>[p.id,p])),mode:edge?"edge":count===1?"point":count===2?"two":"three",edge,tap:!interrupted,moved:false,second:!!second}
       lastTap=null
       history=[]
-      if (count===2) sample(p)
+      if (edge) sample(gesture.scrollPos)
+      else if (count===2) sample(p)
       if (count>3) {gesture.mode="blocked";gesture.tap=false}
       return
     }
@@ -108,15 +111,17 @@ export function createTrackpadGestures({ready, send, now=()=>performance.now(), 
         finishScroll(false,true)
         g.tap &&= time-g.start<=120 && !g.moved && !g.second
         g.max=Math.max(g.max,count)
+        g.edge=false
         g.mode=count===2 && g.max===2?"two":count===3?"three":"blocked"
         if (count>3) g.tap=false
-        g.origin=center(points);g.previous=g.origin;history=[]
+        g.origin=center(points);g.previous=g.origin;g.lastTime=time;g.scrollPos={x:0,y:0};history=[]
         if (count===2) sample(g.origin)
       }
       g.count=count;g.points=new Map(points.map(p=>[p.id,p]));return
     }
     if (phase!=="move" || ["blocked","scroll-ending","two-ending"].includes(g.mode)) return
-    const p=center(points)
+    const p=center(points), dt=Math.max(4,time-(g.lastTime||time))
+    g.lastTime=time
     // Individual finger travel also invalidates a tap (a pinch has no centroid
     // motion). Unsupported gestures must not leak a spurious secondary click.
     for (const point of points) if (distance(point,g.points.get(point.id))>TAP_SLOP) g.moved=true
@@ -124,6 +129,22 @@ export function createTrackpadGestures({ready, send, now=()=>performance.now(), 
     if (g.mode==="point") {
       if (g.second && g.moved && !held) button(true)
       move(p.x-g.previous.x,p.y-g.previous.y)
+    }
+    else if (g.mode==="edge" || (g.mode==="scroll" && g.edge)) {
+      if (g.mode==="edge" && distance(p,g.origin)>TAP_SLOP && Math.abs(p.x-g.origin.x)>Math.abs(p.y-g.origin.y)) {
+        g.mode="point";g.edge=false;history=[]
+        if (g.second && !held) button(true)
+        move(p.x-g.origin.x,p.y-g.origin.y)
+      } else if (g.mode==="scroll" || Math.abs(p.y-g.origin.y)>TAP_SLOP) {
+        const from=g.mode==="edge"?g.origin:g.previous
+        const rawDy=p.y-from.y, gain=scrollGain(Math.abs(rawDy),dt), dy=rawDy*gain
+        g.scrollPos={x:0,y:g.scrollPos.y+dy}
+        sample(g.scrollPos)
+        wheel(0,dy,scroll?"changed":"began")
+        scroll=true;g.mode="scroll";g.tap=false
+      } else {
+        sample(g.scrollPos)
+      }
     }
     else if (g.mode==="two" || g.mode==="scroll") {
       sample(p)
@@ -167,7 +188,15 @@ export function createTrackpad(pad, {ready,send}) {
   const gestures=createTrackpadGestures({ready,send})
   const mouse=new Map()
   let wheelTimer=null,wheeling=false
-  const touches=event=>[...event.targetTouches].map(p=>({id:p.identifier,x:p.clientX,y:p.clientY}))
+  const isEdge=clientX=>{
+    const rect=pad.getBoundingClientRect()
+    const style=getComputedStyle(pad)
+    const insetLeft=parseFloat(style.paddingLeft)||0
+    const insetRight=parseFloat(style.paddingRight)||0
+    const width=Math.min(EDGE_SCROLL_WIDTH,rect.width*0.24)
+    return rect.width>0 && (clientX-rect.left<=width+insetLeft || rect.right-clientX<=width+insetRight)
+  }
+  const touches=event=>[...event.targetTouches].map(p=>({id:p.identifier,x:p.clientX,y:p.clientY,edge:isEdge(p.clientX)}))
   for (const [name,phase] of [["touchstart","start"],["touchmove","move"],["touchend","end"],["touchcancel","cancel"]]) {
     pad.addEventListener(name,event=>{
       event.preventDefault()
