@@ -107,8 +107,18 @@ async fn session(app: App, user: String, socket: WebSocket) {
         }
     });
 
-    // A client that stops talking for 60s is treated as gone so it cannot keep control.
-    while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
+    // Browser control has a short renewable lease even if TCP remains half-open.
+    let mut lease_tick = tokio::time::interval(Duration::from_secs(1));
+    let idle = tokio::time::sleep(Duration::from_secs(60));
+    tokio::pin!(idle);
+    loop {
+        let frame = tokio::select! {
+            _ = lease_tick.tick() => { room.lock().await.expire_web_control(); continue; }
+            _ = &mut idle => break,
+            frame = stream.next() => frame,
+        };
+        let Some(Ok(frame)) = frame else { break };
+        idle.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(60));
         match frame {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(msg) => {

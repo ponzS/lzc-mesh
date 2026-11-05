@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="lzcapp-navigation-bar-scheme" content="hidden">
+<meta name="lzcapp-disable-dark" content="true">
+<meta name="theme-color" content="#f5f5f5">
+<title>键盘触控板 · 懒猫设备接力</title>
+<script src="chrome.js?v=0.3.2"></script>
+<link rel="stylesheet" href="style.css?v=0.3.2">
+<link rel="stylesheet" href="controller.css?v=0.3.2">
+</head>
+<body class="controller-page">
+<div id="controller" class="controller">
+  <div id="touchpad" class="touchpad" tabindex="0" role="application" aria-label="设备接力触控板" aria-describedby="gesture-help">
+    <div class="touchpad-guide">
+      <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 15h18M12 15v5"/></svg>
+      <strong id="current-device">键盘触控板</strong>
+      <span id="control-status" role="status" aria-live="polite">正在连接中枢…</span>
+      <p id="gesture-help">单指移动/轻点 · 双指轻点右键<br>双指自然滚动 · 三指拖拽<br>轻点两下并滑动也可拖拽，抬手松开</p>
+      <span id="input-notice" class="input-notice" role="status" aria-live="polite"></span>
+    </div>
+  </div>
+  <textarea id="mobile-input" class="mobile-input" tabindex="-1" aria-label="设备键盘输入" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" inputmode="text" enterkeyhint="enter" disabled></textarea>
+  <nav id="mobile-shortcuts" class="mobile-shortcuts" aria-label="设备键盘与快捷键">
+    <div class="device-strip">
+      <select id="target-device" aria-label="控制设备" disabled><option value="">暂无可用设备</option></select>
+      <button id="control-toggle" type="button" disabled>开始控制</button>
+    </div>
+    <div class="mobile-shortcut-row" role="toolbar" aria-label="键盘与导航">
+      <button id="mobile-keyboard" class="mobile-key mobile-icon" type="button" aria-label="展开键盘" title="展开键盘" aria-pressed="false" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 15h10" stroke-linecap="round"/></svg></button>
+      <div id="shortcut-row-1" class="mobile-key-scroll"></div>
+    </div>
+    <div class="mobile-shortcut-row" role="toolbar" aria-label="快捷键与符号">
+      <a id="mobile-home" class="mobile-key mobile-icon" href="./" aria-label="返回首页" title="返回首页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg></a>
+      <div id="shortcut-row-2" class="mobile-key-scroll"></div>
+    </div>
+  </nav>
+</div>
+<script type="module" src="controller.js?v=0.3.2"></script>
+</body>
+</html>

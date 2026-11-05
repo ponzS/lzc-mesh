@@ -74,7 +74,7 @@ pub struct Scroll {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// First frame. Viewers (web page) only watch and edit the layout.
+    /// First frame. Web managers watch/edit and may explicitly start temporary control.
     Hello {
         #[serde(default)]
         id: String,
@@ -91,6 +91,11 @@ pub enum ClientMsg {
     DeviceHello { id: String, name: String, platform: Platform, w: f64, h: f64, #[serde(default)] version: String, public_key: String },
     DeviceProof { signature: String },
     DeviceTrust { id: String, fingerprint: String, approved: bool },
+    /// Account manager only; no persistent device or desktop client upgrade required.
+    WebControl { target: String },
+    WebAlive { control_id: String },
+    /// Committed non-key text, explicitly staged on the target clipboard for manual paste.
+    WebText { text: String },
     /// The physical cursor of this device is pushing against a screen edge.
     /// `pos` is the 0..1 position along that edge.
     Edge { dir: Dir, pos: f64 },

@@ -47,7 +47,12 @@ try {
    } else if(command.op==='key') {
     for(const type of ['keyDown','keyUp']) await target('Input.dispatchKeyEvent',{type,key:command.key,code:command.code,windowsVirtualKeyCode:command.vk,nativeVirtualKeyCode:command.vk});
     result=true;
-   } else if(command.op==='viewport') result=await target('Emulation.setDeviceMetricsOverride',{width:command.width,height:command.height,deviceScaleFactor:1,mobile:!!command.mobile});
+   } else if(command.op==='viewport') {
+    result=await target('Emulation.setDeviceMetricsOverride',{width:command.width,height:command.height,deviceScaleFactor:1,mobile:!!command.mobile});
+    await target('Emulation.setTouchEmulationEnabled',{enabled:!!command.mobile});
+   } else if(command.op==='touch') result=await target('Input.dispatchTouchEvent',{type:command.type,touchPoints:command.points??[]});
+   else if(command.op==='text') result=await target('Input.insertText',{text:command.text});
+   else if(command.op==='color') result=await target('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:command.scheme}]});
    else if(command.op==='shot') {const shot=await target('Page.captureScreenshot',{format:'png'});writeFileSync(command.path,Buffer.from(shot.data,'base64'));result=true;}
    else if(command.op==='reload') result=await target('Page.reload');
    else if(command.op==='quit') break;

@@ -13,6 +13,9 @@ use crate::protocol::{ActiveView, ClientMsg, DeviceView, Dir, FileView, HubMsg, 
 use crate::store::{Device, Snapshot, Store};
 #[path = "device_auth.rs"]
 mod device_auth;
+#[path = "mobile_controller.rs"]
+mod mobile_controller;
+use mobile_controller::web_source;
 
 pub type Tx = mpsc::UnboundedSender<HubMsg>;
 
@@ -64,6 +67,7 @@ pub struct Room {
     conns: HashMap<u64, Conn>,
     active: Option<Active>,
     device_watches: HashMap<String, watch::Sender<bool>>,
+    web_lease: Option<std::time::Instant>,
 }
 
 #[derive(Clone)]
@@ -89,6 +93,7 @@ impl Hub {
                     conns: HashMap::new(),
                     active: None,
                     device_watches: HashMap::new(),
+                    web_lease: None,
                 }))
             })
             .clone()
@@ -108,6 +113,7 @@ impl Room {
 
     pub fn detach(&mut self, conn: u64) {
         let Some(old) = self.conns.remove(&conn) else { return };
+        self.drop_device_from_active(&web_source(conn));
         if let Some(id) = old.device {
             if !self.is_online(&id) {
                 self.drop_device_from_active(&id);
@@ -123,8 +129,10 @@ impl Room {
     }
 
     fn send_to(&self, id: &str, msg: HubMsg) {
-        for c in self.conns.values().filter(|c| c.device.as_deref() == Some(id) && self.trusted_conn(c)) {
-            let _ = c.tx.send(msg.clone());
+        for (conn, c) in &self.conns {
+            if (c.device.as_deref() == Some(id) && self.trusted_conn(c)) || (c.manager && web_source(*conn) == id) {
+                let _ = c.tx.send(msg.clone());
+            }
         }
     }
 
@@ -148,6 +156,7 @@ impl Room {
                     self.hello(conn,id,name,platform,w,h,version);self.broadcast();
                 } else if platform==Platform::Web && self.conns.get(&conn).is_some_and(|c|!c.native && c.device.is_none()) {
                     if let Some(c)=self.conns.get_mut(&conn){c.manager=true;}
+                    self.reply(conn, HubMsg::Welcome { id: web_source(conn), user: self.user.clone(), auth_version: 1 });
                     self.broadcast();
                 } else {
                     if platform!=Platform::Web {if let Some(c)=self.conns.get_mut(&conn){c.native=true;}}
@@ -158,6 +167,9 @@ impl Room {
             ClientMsg::DeviceProof{signature} => self.device_proof(conn,signature),
             ClientMsg::DeviceTrust{id,fingerprint,approved} => self.device_trust(conn,id,fingerprint,approved),
             ClientMsg::Ping => self.reply(conn, HubMsg::Pong),
+            ClientMsg::WebControl { target } => self.web_control(conn, &target),
+            ClientMsg::WebAlive { control_id } => self.web_alive(conn, &control_id),
+            ClientMsg::WebText { text } => self.web_text(conn, text),
             ClientMsg::Takeover { control_id } => {
                 if let Some(id) = device {
                     if self.sharing_ids().contains(id.as_str()) && self.active.as_ref().is_some_and(|a| a.target == id && a.control_id == control_id) {
@@ -201,7 +213,10 @@ impl Room {
                 if let Some(v) = clipboard {
                     self.snapshot.settings.clipboard = v;
                 }
-                if let Some(v) = transport_mode { self.snapshot.settings.transport_mode = v; }
+                if let Some(v) = transport_mode {
+                    self.snapshot.settings.transport_mode = v;
+                    if matches!(v, TransportMode::Direct | TransportMode::Bluetooth) && self.web_lease.is_some() { self.stop(false); }
+                }
                 if let Some(v) = input_enabled {
                     self.snapshot.settings.input_enabled = v;
                     if !v { self.stop(true); }
@@ -264,9 +279,8 @@ impl Room {
                 }
             }
             other => {
-                if let Some(id) = device {
-                    self.input(&id, other);
-                }
+                let source = device.or_else(|| self.conns.get(&conn).filter(|c| c.manager).map(|_| web_source(conn)));
+                if let Some(id) = source { self.input(&id, other); }
             }
         }
     }
@@ -446,6 +460,7 @@ impl Room {
 
     /// Ends remote control. `warp` returns the source cursor to its centre.
     fn stop(&mut self, warp: bool) {
+        self.web_lease = None;
         let Some(a) = self.active.take() else { return };
         if let Some(session) = a.session.clone() {
             self.direct_broadcast(HubMsg::DirectEnd { session, warp });
@@ -468,6 +483,7 @@ impl Room {
     }
 
     fn input(&mut self, from: &str, msg: ClientMsg) {
+        self.expire_web_control();
         if !self.snapshot.settings.input_enabled { return; }
         if matches!(self.snapshot.settings.transport_mode, TransportMode::Direct | TransportMode::Bluetooth) && !matches!(msg, ClientMsg::Release) { return; }
         match msg {
@@ -712,6 +728,9 @@ mod handoff_tests;
 #[cfg(test)]
 #[path = "trust_tests.rs"]
 mod trust_tests;
+#[cfg(test)]
+#[path = "mobile_tests.rs"]
+mod mobile_tests;
 
 #[cfg(test)]
 mod tests_support {
@@ -725,7 +744,7 @@ mod tests {
     pub fn room() -> Room {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let dir = std::env::temp_dir().join(format!("lzc-mesh-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        let mut r=Room { user: "u".into(), store: Store::new(dir), snapshot: Snapshot::default(), conns: HashMap::new(), active: None, device_watches: HashMap::new() };
+        let mut r=Room { user: "u".into(), store: Store::new(dir), snapshot: Snapshot::default(), conns: HashMap::new(), active: None, device_watches: HashMap::new(), web_lease: None };
         let (tx,_rx)=mpsc::unbounded_channel();r.attach(0,tx);
         r.handle(0,ClientMsg::Hello{id:String::new(),name:String::new(),platform:Platform::Web,w:0.0,h:0.0,version:String::new()});
         r
