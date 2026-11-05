@@ -23,19 +23,19 @@ using ui::S;
 constexpr const wchar_t *labels[] = {L"懒猫微服客户端", L"懒猫网络", L"登录会话", L"设备接力应用", L"中枢连接", L"输入权限", L"控制状态", L"本机屏幕", L"共享剪贴板", L"输入通道", L"光标通道", L"键盘通道", L"设备信任"};
 static_assert(sizeof(labels)/sizeof(*labels)==S_COUNT,"Every status needs a non-null painting label");
 
-HWND hLayout, hLog, hBox, hSharing, hSwap, hAutostart, hRetry, hOpen, hCopy, hBoxApply, hElevate, hUpload, hDownload, hDelete, hTransport, hPause, hClient;
+HWND hLayout, hLog, hBox, hSharing, hSwap, hAutoCenter, hAutostart, hRetry, hOpen, hCopy, hBoxApply, hElevate, hUpload, hDownload, hDelete, hTransport, hPause, hClient;
 bool elevateShown = false;
 
 // Geometry computed in layout(), used by paint().
 RECT pLayout, pFiles, pStatus, pSettings, pLog, layoutHint, filesStatus, filesEmpty;
 RECT statusRows[S_COUNT];
-RECT settingText[3], boxLabel, boxFrame, modeLabel, modeNote, rightViewport;
+RECT settingText[4], boxLabel, boxFrame, modeLabel, modeNote, rightViewport;
 int keyWidth = 0, rightOffset = 0, rightHeight = 0, rightPage = 0;
 int wheelRemainder = 0;
 const char *modes[] = {"auto", "bluetooth", "direct", "relay"};
 
-const wchar_t *settingTitle[3] = {L"客户端运行", L"开机自动启动", L"交换 Command 和 Ctrl"};
-const wchar_t *settingDetail[3] = {L"关闭全部共享，保留管理连接以便远程开启", L"登录系统后自动在托盘运行", L"Mac 与 Windows/Linux 互控时对调这两个键"};
+const wchar_t *settingTitle[4] = {L"客户端运行", L"开机自动启动", L"交换 Command 和 Ctrl", L"光标共享，自动居中"};
+const wchar_t *settingDetail[4] = {L"关闭全部共享，保留管理连接以便远程开启", L"登录系统后自动在托盘运行", L"Mac 与 Windows/Linux 互控时对调这两个键", L"跨屏切换时自动将鼠标光标移到屏幕中央"};
 const wchar_t *layoutHintText = L"拖动屏幕调整相对位置，松手后自动贴边并同步到所有设备。控制其他设备时按 Ctrl+Alt+Esc 收回光标。";
 
 std::wstring summary(Level &lv) {
@@ -110,6 +110,7 @@ void create(HWND h) {
     hAutostart = ui::toggle(h, ID_AUTOSTART);
     hClient = ui::toggle(h, ID_CLIENT);
     hSwap = ui::toggle(h, ID_SWAP);
+    hAutoCenter = ui::toggle(h, ID_AUTOCENTER);
     hTransport = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
                                  0, 0, 10, 200, h, (HMENU)(INT_PTR)ID_TRANSPORT, nullptr, nullptr);
     for (const auto *title : {L"自动（局域网优先）", L"仅蓝牙（实验）", L"仅局域网直连", L"仅中枢转发"}) SendMessageW(hTransport, CB_ADDSTRING, 0, (LPARAM)title);
@@ -184,8 +185,8 @@ void layout(HWND h) {
     // Settings
     y = pStatus.bottom + gap;
     int sy = y + titleH;
-    HWND toggles[3] = {hClient, hAutostart, hSwap};
-    for (int i = 0; i < 3; i++) {
+    HWND toggles[4] = {hClient, hAutostart, hSwap, hAutoCenter};
+    for (int i = 0; i < 4; i++) {
         settingText[i] = RECT{rx + inner, sy, rx + rw - inner - S(48), sy + S(38)};
         placeRight(toggles[i], rx + rw - inner - S(36), sy + S(2), S(36), S(22));
         sy += S(48);
@@ -302,7 +303,7 @@ void paint(HWND h) {
     }
 
     panel(dc, pSettings, L"设置");
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         RECT r = settingText[i];
         RECT a{r.left, r.top, r.right, r.top + S(19)};
         ui::drawText(dc, settingTitle[i], a, ui::F.body, ui::TEXT, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
@@ -332,6 +333,7 @@ void refresh() {
     EnableWindow(hSharing, g.operational());
     for (HWND b : {hUpload, hDownload, hDelete, hLayout}) EnableWindow(b, g.operational());
     ui::setToggle(hSwap, g.swapCmdCtrl);
+    ui::setToggle(hAutoCenter, g.autoCenter);
     ui::setToggle(hAutostart, autostart::enabled());
     int selected = 0;
     for (int i = 0; i < 4; i++) if (g.transportMode == modes[i]) selected = i;

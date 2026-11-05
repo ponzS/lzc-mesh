@@ -52,6 +52,7 @@ struct Router {
     connected: bool,
     registered: bool,
     swap: bool,
+    auto_center: bool,
     grant: Option<Grant>,
     retired: VecDeque<String>,
     hub_control: Value,
@@ -107,6 +108,7 @@ pub async fn run(
         connected: false,
         registered: false,
         swap: true,
+        auto_center: false,
         grant: None,
         retired: VecDeque::new(),
         hub_control: Value::Null,
@@ -335,6 +337,9 @@ impl Router {
                 self.legacy = self.grant.is_none()
                     && (v["active"]["source"] == self.id || v["active"]["target"] == self.id);
                 self.swap = v["settings"]["swap_cmd_ctrl"].as_bool().unwrap_or(true);
+                if let Some(ac) = v["settings"]["auto_center"].as_bool() {
+                    self.auto_center = ac;
+                }
                 self.dormant = self.devices.iter().find(|d| d.id == self.id).is_none_or(|d| !d.enabled || !d.trusted);
                 let enabled = !self.dormant && v["settings"]["input_enabled"].as_bool().unwrap_or(true);
                 if !enabled && self.enabled {
@@ -408,7 +413,7 @@ impl Router {
                 if !self.enabled {
                     return;
                 }
-                let Ok(g) = serde_json::from_value::<Grant>(v) else {
+                let Ok(mut g) = serde_json::from_value::<Grant>(v) else {
                     return;
                 };
                 if self.retired.contains(&g.session) { return; }
@@ -419,6 +424,12 @@ impl Router {
                 {
                     self.lease = Instant::now();
                     return;
+                }
+                if self.auto_center {
+                    if let Some(target) = self.devices.iter().find(|d| d.id == g.target) {
+                        g.x = target.x + target.w * 0.5;
+                        g.y = target.y + target.h * 0.5;
+                    }
                 }
                 self.finish(false, false);
                 self.metrics = Metrics::default();
@@ -468,6 +479,17 @@ impl Router {
                     serde_json::from_value::<Wire>(v["data"].clone()),
                 ) {
                     self.receive(peer.to_string(), data, false);
+                }
+            }
+            "auto_center" => {
+                if let Some(ac) = v["enabled"].as_bool() {
+                    self.auto_center = ac;
+                    if v["broadcast"].as_bool() == Some(true) {
+                        let peers: Vec<String> = self.links.keys().cloned().collect();
+                        for peer in peers {
+                            self.send_wire(&peer, Wire::AutoCenter { enabled: ac }, false);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -619,6 +641,25 @@ impl Router {
             self.cb.hub(v);
             return;
         }
+        if kind == "center_cursor" {
+            if self.auto_center {
+                let target_center = self.grant.as_ref().and_then(|g| {
+                    if g.source == self.id {
+                        self.devices.iter().find(|d| d.id == g.target).map(|t| (t.x + t.w * 0.5, t.y + t.h * 0.5))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((cx, cy)) = target_center {
+                    if let Some(g) = &mut self.grant {
+                        g.x = cx;
+                        g.y = cy;
+                    }
+                    self.move_by(0.0, 0.0, None);
+                }
+            }
+            return;
+        }
         if !self.grant.as_ref().is_some_and(|g| g.source == self.id) {
             self.cb.hub(v);
             return;
@@ -710,10 +751,14 @@ impl Router {
             let gx = nx.clamp(target.x, target.right());
             let gy = ny.clamp(target.y, target.bottom());
             if let Some(next) = model::neighbour(&self.devices, &target, dir, gx, gy).cloned() {
-                let (x, y) = model::entry(&next, dir, gx, gy);
+                let (x, y) = if self.auto_center {
+                    (next.x + next.w * 0.5, next.y + next.h * 0.5)
+                } else {
+                    model::entry(&next, dir, gx, gy)
+                };
                 if next.id == self.id {
                     self.action(json!({"t":"leave"}));
-                    let (x, y) = next.norm(x, y);
+                    let (x, y) = if self.auto_center { (0.5, 0.5) } else { next.norm(x, y) };
                     self.finish_at(Some((x, y)), true);
                     return;
                 }
@@ -920,6 +965,10 @@ impl Router {
                 }
             }
             Wire::Pong { .. } => {}
+            Wire::AutoCenter { enabled } => {
+                self.auto_center = enabled;
+                self.inject(json!({"t": "auto_center", "enabled": enabled}));
+            }
             Wire::Ack {
                 session,
                 source,
@@ -1051,11 +1100,14 @@ impl Router {
         let Some(mut receiver) = self.receivers.remove(&g.session) else {
             return;
         };
-        while let Some(input) = receiver.actions.remove(&(receiver.barrier + 1)) {
-            self.position(input.x, input.y);
+        while let Some(mut input) = receiver.actions.remove(&(receiver.barrier + 1)) {
             let mut event = input.event.clone().unwrap();
             if event["t"] == "enter" {
                 if let Some(me) = self.devices.iter().find(|d| d.id == self.id) {
+                    if self.auto_center {
+                        input.x = me.x + me.w * 0.5;
+                        input.y = me.y + me.h * 0.5;
+                    }
                     let (x, y) = me.norm(input.x, input.y);
                     event["x"] = json!(x);
                     event["y"] = json!(y);
@@ -1063,6 +1115,7 @@ impl Router {
                 self.controlled = true;
                 self.active_ui(&g.source, &self.id);
             }
+            self.position(input.x, input.y);
             if event["t"] == "leave" {
                 self.controlled = false;
             }

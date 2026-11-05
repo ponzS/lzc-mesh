@@ -206,7 +206,7 @@ impl Room {
                 }
                 self.broadcast();
             }
-            ClientMsg::Settings { swap_cmd_ctrl, clipboard, transport_mode, input_enabled } => {
+            ClientMsg::Settings { swap_cmd_ctrl, clipboard, transport_mode, input_enabled, auto_center } => {
                 if let Some(v) = swap_cmd_ctrl {
                     self.snapshot.settings.swap_cmd_ctrl = v;
                 }
@@ -220,6 +220,9 @@ impl Room {
                 if let Some(v) = input_enabled {
                     self.snapshot.settings.input_enabled = v;
                     if !v { self.stop(true); }
+                }
+                if let Some(v) = auto_center {
+                    self.snapshot.settings.auto_center = v;
                 }
                 self.store.save(&self.user, &self.snapshot);
                 self.broadcast();
@@ -892,7 +895,7 @@ mod clipboard_tests {
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
 
-        r.handle(0, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None });
+        r.handle(0, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None, auto_center: None });
         assert!(!r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
         r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
         assert_eq!(clip(&mut win), 0, "relayed while disabled");

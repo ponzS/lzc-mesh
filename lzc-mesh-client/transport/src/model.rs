@@ -107,6 +107,9 @@ pub enum Wire {
     Pong {
         nonce: u64,
     },
+    AutoCenter {
+        enabled: bool,
+    },
 }
 
 pub fn neighbour<'a>(

@@ -70,6 +70,7 @@ struct App {
     std::string activeSource, activeTarget, activeControlId, receiveControlId, blockedControlId;
     MeshInputGate inputGate{};
     bool swapCmdCtrl = true;
+    bool autoCenter = true;
     bool clipboardEnabled = false;
     bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted
     bool inputEnabled = true;     // account-wide keyboard/mouse pause

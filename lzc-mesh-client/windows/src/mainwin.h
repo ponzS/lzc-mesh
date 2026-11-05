@@ -3,7 +3,7 @@
 // Main window chrome: painted header, panels and status, plus the child controls.
 namespace mainwin {
 enum {
-    ID_RETRY = 100, ID_OPEN, ID_COPY, ID_BOX_APPLY, ID_SWAP, ID_ELEVATE, ID_SHARING, ID_AUTOSTART, ID_BOX_EDIT, ID_LOG, ID_TRANSPORT, ID_PAUSE_ALL, ID_CLIENT,
+    ID_RETRY = 100, ID_OPEN, ID_COPY, ID_BOX_APPLY, ID_SWAP, ID_AUTOCENTER, ID_ELEVATE, ID_SHARING, ID_AUTOSTART, ID_BOX_EDIT, ID_LOG, ID_TRANSPORT, ID_PAUSE_ALL, ID_CLIENT,
 };
 void create(HWND h);
 void onDpi(HWND h);

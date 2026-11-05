@@ -143,6 +143,16 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         if s.authVerified && !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
+    func setAutoCenter(_ on: Bool) {
+        let s = AppState.shared
+        s.autoCenter = on
+        s.save()
+        direct.received(["t": "auto_center", "enabled": on, "broadcast": true])
+        send(["t": "settings", "auto_center": on])
+        s.log("光标共享自动居中已\(on ? "开启" : "关闭")")
+        s.onDevices?()
+    }
+
     func localActivity() {
         let s = AppState.shared
         guard s.operational, s.controlled else { return }
@@ -192,6 +202,12 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.activeSource = (o["source"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             s.activeTarget = (o["target"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             s.updateControlStatus()
+        case "auto_center":
+            if let ac = o["enabled"] as? Bool, ac != s.autoCenter {
+                s.autoCenter = ac
+                s.save()
+                s.onDevices?()
+            }
         case "state":
             s.devices = (o["devices"] as? [[String: Any]] ?? []).map {
                 MeshDevice(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "", platform: $0["platform"] as? String ?? "",
@@ -209,6 +225,11 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             let settings = o["settings"] as? [String: Any]
             s.transportMode = settings?["transport_mode"] as? String ?? "auto"
             s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
+            if let ac = settings?["auto_center"] as? Bool, ac != s.autoCenter {
+                s.autoCenter = ac
+                s.save()
+                direct.received(["t": "auto_center", "enabled": ac])
+            }
             let clip = settings?["clipboard"] as? Bool ?? true
             if clip != s.clipboardEnabled { s.log("共享剪贴板已\(clip ? "开启" : "关闭")") }
             s.clipboardEnabled = clip
@@ -232,7 +253,9 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             sourceControlID = ""
             s.captured = false
             input.capture(false)
-            if o["warp"] as? Bool ?? false { input.warp(x, y) }
+            if o["warp"] as? Bool ?? false {
+                input.warp(s.autoCenter ? 0.5 : x, s.autoCenter ? 0.5 : y)
+            }
             s.log("控制已收回本机")
             s.updateControlStatus()
         case "enter":
@@ -242,8 +265,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.captured = false
             receiveControlID = scope.isEmpty ? activeControlID : scope
             s.controlled = true
-            s.log(String(format: "被远程控制：光标进入本机 (%.2f, %.2f)", x, y))
-            input.enter(x, y)
+            let ex = s.autoCenter ? 0.5 : x
+            let ey = s.autoCenter ? 0.5 : y
+            s.log(String(format: "被远程控制：光标进入本机 (%.2f, %.2f)", ex, ey))
+            input.enter(ex, ey)
             s.updateControlStatus()
         case "leave":
             s.controlled = false

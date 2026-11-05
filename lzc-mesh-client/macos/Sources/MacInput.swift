@@ -167,7 +167,8 @@ final class MacInput {
         var ids = [CGDirectDisplayID](repeating: 0, count: 16)
         var n: UInt32 = 0
         CGGetActiveDisplayList(16, &ids, &n)
-        return ids.prefix(Int(n)).map { CGDisplayBounds($0) }.reduce(CGRect.null) { $0.union($1) }
+        let b = ids.prefix(Int(n)).map { CGDisplayBounds($0) }.reduce(CGRect.null) { $0.union($1) }
+        return b.width > 0 && b.height > 0 ? b : CGDisplayBounds(CGMainDisplayID())
     }
 
     private func checkEdge(_ event: CGEvent) {

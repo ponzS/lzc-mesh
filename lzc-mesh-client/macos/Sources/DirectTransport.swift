@@ -70,7 +70,11 @@ final class DirectTransport: @unchecked Sendable {
             handle = AppState.shared.deviceID.withCString {
                 mesh_direct_new($0, directTransportCallback, UnsafeMutableRawPointer(bitPattern: token))
             }
-            if let handle { "{\"t\":\"hub_connected\"}".withCString { mesh_direct_hub(handle, $0) } }
+            if let handle {
+                "{\"t\":\"hub_connected\"}".withCString { mesh_direct_hub(handle, $0) }
+                let ac = AppState.shared.autoCenter ? "true" : "false"
+                "{\"t\":\"auto_center\",\"enabled\":\(ac)}".withCString { mesh_direct_hub(handle, $0) }
+            }
             else {
                 lock.lock(); accepting = false; generation = 0; lock.unlock()
                 DirectCallbacks.remove(token)

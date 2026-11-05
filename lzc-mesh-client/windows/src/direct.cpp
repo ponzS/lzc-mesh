@@ -56,7 +56,10 @@ void connected(Injector inject) {
     session->generation = ++nextGeneration;
     acceptingGeneration=session->generation;
     session->handle = mesh_direct_new(g.deviceId.c_str(), callback, reinterpret_cast<void *>(static_cast<uintptr_t>(session->generation)));
-    if (session->handle) mesh_direct_hub(session->handle, "{\"t\":\"hub_connected\"}");
+    if (session->handle) {
+        mesh_direct_hub(session->handle, "{\"t\":\"hub_connected\"}");
+        mesh_direct_hub(session->handle, JsonOut().s("t", "auto_center").b("enabled", g.autoCenter).str().c_str());
+    }
     else {
         acceptingGeneration=0;
         session.reset();

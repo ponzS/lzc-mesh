@@ -10,6 +10,7 @@ const statusText = document.getElementById("status")
 const dot = document.getElementById("dot")
 const swap = document.getElementById("swap")
 const clipboardToggle = document.getElementById("clipboard")
+const autoCenterToggle = document.getElementById("auto-center")
 const transportMode = document.getElementById("transport-mode")
 const transportNote = document.getElementById("transport-note")
 const pauseAll = document.getElementById("pause-all")
@@ -21,7 +22,7 @@ const pendingTrust = new Map()
 
 const PLATFORM = { macos: "macOS", windows: "Windows", linux: "Linux" }
 let ws = null
-let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true, clipboard: true } }
+let state = { devices: [], active: null, settings: { swap_cmd_ctrl: true, clipboard: true, auto_center: true } }
 let view = { scale: 1, ox: 0, oy: 0 }
 let drag = null
 
@@ -93,6 +94,7 @@ function render() {
   computeView()
   swap.checked = !!state.settings?.swap_cmd_ctrl
   clipboardToggle.checked = !!state.settings?.clipboard
+  if (autoCenterToggle) autoCenterToggle.checked = state.settings?.auto_center !== false
   transportMode.value = state.settings?.transport_mode || "auto"
   const enabled = state.settings?.input_enabled !== false
   pauseAll.textContent = enabled ? "暂停全部键鼠接力" : "恢复键鼠接力"
@@ -260,6 +262,7 @@ transportMode.addEventListener("change", () => send({ t: "settings", transport_m
 pauseAll.addEventListener("click", () => send({ t: "settings", input_enabled: state.settings?.input_enabled === false }))
 swap.addEventListener("change", () => send({ t: "settings", swap_cmd_ctrl: swap.checked }))
 clipboardToggle.addEventListener("change", () => send({ t: "settings", clipboard: clipboardToggle.checked }))
+autoCenterToggle?.addEventListener("change", () => send({ t: "settings", auto_center: autoCenterToggle.checked }))
 window.addEventListener("resize", () => drag || render())
 new ResizeObserver(() => drag || render()).observe(stage)
 setInterval(() => send({ t: "ping" }), 20000)

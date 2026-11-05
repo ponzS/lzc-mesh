@@ -128,6 +128,8 @@ pub enum ClientMsg {
         transport_mode: Option<TransportMode>,
         #[serde(default)]
         input_enabled: Option<bool>,
+        #[serde(default)]
+        auto_center: Option<bool>,
     },
     DirectHello { version: u32, certificate: String, addresses: Vec<String>, #[serde(default)] bluetooth: Option<serde_json::Value> },
     DirectBegin { dir: Dir, pos: f64 },
@@ -172,11 +174,13 @@ pub struct Settings {
     pub transport_mode: TransportMode,
     #[serde(default = "default_true")]
     pub input_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_center: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { swap_cmd_ctrl: true, clipboard: true, transport_mode: TransportMode::Auto, input_enabled: true }
+        Self { swap_cmd_ctrl: true, clipboard: true, transport_mode: TransportMode::Auto, input_enabled: true, auto_center: true }
     }
 }
 

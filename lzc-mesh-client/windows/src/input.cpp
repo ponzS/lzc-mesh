@@ -257,7 +257,7 @@ LRESULT CALLBACK mouseProc(int code, WPARAM wp, LPARAM lp) {
     }
     const auto epoch=captureEpoch.load();
     if (!captured) {
-        if (wp == WM_MOUSEMOVE && !(m->flags & LLMHF_INJECTED)) edgeCheck(m->pt);
+        if (!(m->flags & LLMHF_INJECTED) && wp == WM_MOUSEMOVE) edgeCheck(m->pt);
         return CallNextHookEx(nullptr, code, wp, lp);
     }
     if (!sourcePointer.ready(epoch) || (int32_t)(m->time-captureBegan.load())<0) return 1;

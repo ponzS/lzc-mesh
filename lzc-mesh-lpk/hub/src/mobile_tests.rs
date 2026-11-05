@@ -46,7 +46,7 @@ fn browser_disconnect_release_takeover_pause_and_dormancy_release_held_input() {
             "release"=>r.handle(3,ClientMsg::Release),
             "disconnect"=>r.detach(3),
             "takeover"=>r.handle(1,ClientMsg::Takeover{control_id:id}),
-            "pause"=>r.handle(0,ClientMsg::Settings{swap_cmd_ctrl:None,clipboard:None,transport_mode:None,input_enabled:Some(false)}),
+            "pause"=>r.handle(0,ClientMsg::Settings{swap_cmd_ctrl:None,clipboard:None,transport_mode:None,input_enabled:Some(false),auto_center:None}),
             "sharing"=>r.handle(1,ClientMsg::Sharing{enabled:false}),
             _=>r.handle(0,ClientMsg::DeviceEnabled{id:"a".into(),enabled:false}),
         }
@@ -135,7 +135,7 @@ fn mode_changes_stop_browser_and_manual_target_switch_releases_old_input() {
     start(&mut r,3,"a"); held(&mut r,3); drain(&mut a);
     start(&mut r,3,"b"); released(&mut a);
     held(&mut r,3); drain(&mut b);
-    r.handle(0,ClientMsg::Settings{swap_cmd_ctrl:None,clipboard:None,transport_mode:Some(TransportMode::Direct),input_enabled:None});
+    r.handle(0,ClientMsg::Settings{swap_cmd_ctrl:None,clipboard:None,transport_mode:Some(TransportMode::Direct),input_enabled:None,auto_center:None});
     assert!(r.active.is_none()); released(&mut b);
 }
 
