@@ -9,13 +9,13 @@ function fixture() {
     ready:()=>active,send:m=>messages.push({...m}),now:()=>time,
     requestFrame:fn=>{frames.set(++serial,fn);return serial},cancelFrame:id=>frames.delete(id),
   })
-  const touch=(phase,points,dt=16)=>{time+=dt;gestures.touch(phase,points.map(([id,x,y])=>({id,x,y})))}
+  const touch=(phase,points,dt=16)=>{time+=dt;gestures.touch(phase,points.map(([id,x,y,edge])=>({id,x,y,edge})))}
   const tick=(dt=16)=>{time+=dt;const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(time)}
   const buttons=()=>messages.filter(m=>m.t==='button')
   const wheels=()=>messages.filter(m=>m.t==='wheel')
   return {gestures,messages,touch,tick,buttons,wheels,frames,setActive:value=>active=value}
 }
-const one=(x=100,y=100)=>[[0,x,y]]
+const one=(x=100,y=100,edge=false)=>[[0,x,y,edge]]
 const two=(x=100,y=100)=>[[0,x,y],[1,x+60,y]]
 const three=(x=100,y=100)=>[[0,x,y],[1,x+60,y],[2,x+120,y]]
 function tap(f,points=one()) {f.touch('start',points);f.touch('end',[])}
@@ -106,4 +106,21 @@ test('single-finger pointing survives handoff and control loss drops pending fra
   f.touch('move',one(130,100));f.tick();assert.equal(f.messages.at(-1).dx,20)
   f.touch('move',one(140,100));const n=f.messages.length;f.setActive(false);f.gestures.reset(false);f.tick()
   assert.equal(f.messages.length,n)
+})
+test('right-edge single-finger slide scrolls vertically with natural direction, acceleration and inertia',()=>{
+  const f=fixture()
+  f.touch('start',one(375,100,true))
+  f.touch('move',one(365,120,true))
+  f.touch('move',one(360,150,false))
+  f.touch('end',[])
+  assert.equal(f.messages.filter(m=>m.t==='motion').length,0)
+  assert.equal(f.buttons().length,0)
+  const changed=f.wheels().filter(m=>!m.momentum_phase && (m.dx||m.dy))
+  assert.equal(changed.reduce((n,m)=>n+m.dx,0),0)
+  assert.ok(changed.reduce((n,m)=>n+m.dy,0)>1500)
+  for(let i=0;i<110&&f.frames.size;i++)f.tick()
+  const momentum=f.wheels().filter(m=>m.momentum_phase)
+  assert.equal(momentum[0].momentum_phase,'began')
+  assert.equal(momentum.at(-1).momentum_phase,'ended')
+  assert.ok(momentum.every(m=>m.dx===0))
 })
