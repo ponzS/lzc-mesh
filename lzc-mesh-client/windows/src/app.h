@@ -69,6 +69,7 @@ struct App {
     std::vector<MeshDevice> devices;
     std::string activeSource, activeTarget, activeControlId, receiveControlId;
     bool swapCmdCtrl = true;
+    bool autoCenter = true;
     bool clipboardEnabled = false;
     bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted
     bool inputEnabled = true;     // account-wide keyboard/mouse pause

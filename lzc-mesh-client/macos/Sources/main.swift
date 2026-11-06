@@ -66,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hub.send(["t": "settings", "transport_mode": self.ui.selectedTransportMode])
             },
             "swap": { [weak self] in self?.hub.send(["t": "settings", "swap_cmd_ctrl": !(self?.state.swapCmdCtrl ?? true)]) },
+            "autocenter": { [weak self] in
+                guard let self else { return }
+                self.hub.setAutoCenter(!self.state.autoCenter)
+                self.ui.refreshSettings()
+            },
             "box": { [weak self] in self?.applyBox() },
         ]) { a, _ in a }
         bar.actions = shared
@@ -81,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !CommandLine.arguments.contains("--background") { showWindow() }
         lzc.refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            self?.updateScreen()
             self?.lzc.refresh()
             self?.input.refreshPermissionStatus()
         }

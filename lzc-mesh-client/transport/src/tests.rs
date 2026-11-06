@@ -3,6 +3,8 @@
 use super::*;
 #[path = "handoff_tests.rs"]
 mod handoff_tests;
+#[path = "auto_center_tests.rs"]
+mod auto_center_tests;
 use serde_json::{json, Value};
 use std::{
     sync::Mutex,

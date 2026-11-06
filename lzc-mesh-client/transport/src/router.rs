@@ -52,6 +52,7 @@ struct Router {
     connected: bool,
     registered: bool,
     swap: bool,
+    auto_center: bool,
     grant: Option<Grant>,
     retired: VecDeque<String>,
     hub_control: Value,
@@ -107,6 +108,7 @@ pub async fn run(
         connected: false,
         registered: false,
         swap: true,
+        auto_center: false, // old hubs without this setting retain edge placement
         grant: None,
         retired: VecDeque::new(),
         hub_control: Value::Null,
@@ -335,6 +337,7 @@ impl Router {
                 self.legacy = self.grant.is_none()
                     && (v["active"]["source"] == self.id || v["active"]["target"] == self.id);
                 self.swap = v["settings"]["swap_cmd_ctrl"].as_bool().unwrap_or(true);
+                self.auto_center = v["settings"]["auto_center"].as_bool().unwrap_or(false);
                 self.dormant = self.devices.iter().find(|d| d.id == self.id).is_none_or(|d| !d.enabled || !d.trusted);
                 let enabled = !self.dormant && v["settings"]["input_enabled"].as_bool().unwrap_or(true);
                 if !enabled && self.enabled {
@@ -408,7 +411,7 @@ impl Router {
                 if !self.enabled {
                     return;
                 }
-                let Ok(g) = serde_json::from_value::<Grant>(v) else {
+                let Ok(mut g) = serde_json::from_value::<Grant>(v) else {
                     return;
                 };
                 if self.retired.contains(&g.session) { return; }
@@ -419,6 +422,12 @@ impl Router {
                 {
                     self.lease = Instant::now();
                     return;
+                }
+                if self.auto_center {
+                    if let Some(target) = self.devices.iter().find(|d| d.id == g.target) {
+                        g.x = target.x + target.w * 0.5;
+                        g.y = target.y + target.h * 0.5;
+                    }
                 }
                 self.finish(false, false);
                 self.metrics = Metrics::default();
@@ -710,10 +719,14 @@ impl Router {
             let gx = nx.clamp(target.x, target.right());
             let gy = ny.clamp(target.y, target.bottom());
             if let Some(next) = model::neighbour(&self.devices, &target, dir, gx, gy).cloned() {
-                let (x, y) = model::entry(&next, dir, gx, gy);
+                let (x, y) = if self.auto_center {
+                    (next.x + next.w * 0.5, next.y + next.h * 0.5)
+                } else {
+                    model::entry(&next, dir, gx, gy)
+                };
                 if next.id == self.id {
                     self.action(json!({"t":"leave"}));
-                    let (x, y) = next.norm(x, y);
+                    let (x, y) = if self.auto_center { (0.5, 0.5) } else { next.norm(x, y) };
                     self.finish_at(Some((x, y)), true);
                     return;
                 }

@@ -206,7 +206,7 @@ impl Room {
                 }
                 self.broadcast();
             }
-            ClientMsg::Settings { swap_cmd_ctrl, clipboard, transport_mode, input_enabled } => {
+            ClientMsg::Settings { swap_cmd_ctrl, clipboard, transport_mode, input_enabled, auto_center } => {
                 if let Some(v) = swap_cmd_ctrl {
                     self.snapshot.settings.swap_cmd_ctrl = v;
                 }
@@ -220,6 +220,9 @@ impl Room {
                 if let Some(v) = input_enabled {
                     self.snapshot.settings.input_enabled = v;
                     if !v { self.stop(true); }
+                }
+                if let Some(v) = auto_center {
+                    self.snapshot.settings.auto_center = v;
                 }
                 self.store.save(&self.user, &self.snapshot);
                 self.broadcast();
@@ -544,7 +547,7 @@ impl Room {
         let mut random = [0u8; 32];
         if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut random)).is_err() { return; }
         let session: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        let (x, y) = entry_point(&target, dir, gx, gy);
+        let (x, y) = self.entry_point(&target, dir, gx, gy);
         self.active = Some(Active { source: from.into(), target: target.id.clone(), x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: HashSet::new(), session: Some(session.clone()), control_id: session.clone() });
         self.direct_broadcast(HubMsg::DirectSession { session, source: from.into(), target: target.id, x, y });
         self.broadcast();
@@ -623,7 +626,7 @@ impl Room {
             Dir::Down => (src.x + pos * src.w, src.bottom()),
         };
         let Some(target) = layout::neighbour(self.online(), &src, dir, gx, gy).cloned() else { return };
-        let (x, y) = entry_point(&target, dir, gx, gy);
+        let (x, y) = self.entry_point(&target, dir, gx, gy);
         let Some(control_id) = fresh_control_id() else { return };
         self.active = Some(Active {
             source: from.to_string(),
@@ -680,7 +683,7 @@ impl Room {
         let a = self.active.take().unwrap();
         self.release_held(&a);
         self.send_to(&a.target, HubMsg::Leave);
-        let (x, y) = entry_point(&next, dir, gx, gy);
+        let (x, y) = self.entry_point(&next, dir, gx, gy);
         if next.id == a.source {
             let (nx, ny) = norm(&next, x, y);
             self.send_to(&a.source, HubMsg::Release { x: nx, y: ny, warp: true });
@@ -691,6 +694,14 @@ impl Room {
             self.active = Some(Active { source: a.source, target: next.id, x, y, keys: HashSet::new(), buttons: HashSet::new(), src_keys: a.src_keys, session: None, control_id: a.control_id });
         }
         self.broadcast();
+    }
+
+    fn entry_point(&self, device: &Device, dir: Dir, gx: f64, gy: f64) -> (f64, f64) {
+        if self.snapshot.settings.auto_center {
+            (device.x + device.w * 0.5, device.y + device.h * 0.5)
+        } else {
+            entry_point(device, dir, gx, gy)
+        }
     }
 
     #[cfg(test)]
@@ -731,6 +742,9 @@ mod trust_tests;
 #[cfg(test)]
 #[path = "mobile_tests.rs"]
 mod mobile_tests;
+#[cfg(test)]
+#[path = "auto_center_tests.rs"]
+mod auto_center_tests;
 
 #[cfg(test)]
 mod tests_support {
@@ -745,6 +759,9 @@ mod tests {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let dir = std::env::temp_dir().join(format!("lzc-mesh-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let mut r=Room { user: "u".into(), store: Store::new(dir), snapshot: Snapshot::default(), conns: HashMap::new(), active: None, device_watches: HashMap::new(), web_lease: None };
+        // Existing routing tests explicitly exercise edge-preserving mode.
+        // Auto-center/default migration behavior has dedicated regressions.
+        r.snapshot.settings.auto_center = false;
         let (tx,_rx)=mpsc::unbounded_channel();r.attach(0,tx);
         r.handle(0,ClientMsg::Hello{id:String::new(),name:String::new(),platform:Platform::Web,w:0.0,h:0.0,version:String::new()});
         r
@@ -892,7 +909,7 @@ mod clipboard_tests {
         assert_eq!(clip(&mut win), 1);
         assert_eq!(clip(&mut mac), 0, "echoed to the sender");
 
-        r.handle(0, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None });
+        r.handle(0, ClientMsg::Settings { swap_cmd_ctrl: None, clipboard: Some(false), transport_mode: None, input_enabled: None, auto_center: None });
         assert!(!r.snapshot.settings.clipboard && r.snapshot.settings.swap_cmd_ctrl);
         r.handle(1, ClientMsg::Clipboard { text: "secret".into() });
         assert_eq!(clip(&mut win), 0, "relayed while disabled");

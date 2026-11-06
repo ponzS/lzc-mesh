@@ -54,6 +54,7 @@ final class AppState {
     var activeSource: String?, activeTarget: String?
     var transportMode = "auto"
     var swapCmdCtrl = true
+    var autoCenter = true
     var clipboardEnabled = false
     var files: [SharedFile] = []
     var captured = false, controlled = false
@@ -109,11 +110,12 @@ final class AppState {
         deviceID = (cfg["device_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "macos-\(UUID().uuidString.lowercased())"
         boxOverride = cfg["box"] as? String ?? ""
         sharingEnabled = cfg["sharing"] as? Bool ?? true
+        autoCenter = cfg["auto_center"] as? Bool ?? true
         save()
     }
 
     func save() {
-        let obj: [String: Any] = ["device_id": deviceID, "box": boxOverride, "sharing": sharingEnabled]
+        let obj: [String: Any] = ["device_id": deviceID, "box": boxOverride, "sharing": sharingEnabled, "auto_center": autoCenter]
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: .prettyPrinted) { try? data.write(to: configURL) }
     }
 

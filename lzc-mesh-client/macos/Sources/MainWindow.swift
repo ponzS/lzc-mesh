@@ -17,6 +17,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
     private let sharingSwitch = ToggleSwitch()
     private let clientSwitch = ToggleSwitch()
     private let swapSwitch = ToggleSwitch()
+    private let autoCenterSwitch = ToggleSwitch()
     private let autostartSwitch = ToggleSwitch()
     private let boxField = NSTextField()
     private let transportPicker = NSPopUpButton()
@@ -187,6 +188,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
             settingRow("客户端运行", "关闭全部共享，保留管理连接以便远程开启", clientSwitch, key: "client"),
             settingRow("开机自动启动", "登录系统后自动在菜单栏运行", autostartSwitch, key: "autostart"),
             settingRow("交换 Command 和 Ctrl", "Mac 与 Windows/Linux 互控时对调这两个键", swapSwitch, key: "swap"),
+            settingRow("光标共享，自动居中", "跨屏切换时自动将鼠标光标移到屏幕中央", autoCenterSwitch, key: "autocenter"),
             boxCol,
         ])
         settingsStack.orientation = .vertical
@@ -265,11 +267,13 @@ final class MainWindow: NSObject, NSWindowDelegate {
     func refreshLayout() {
         layoutView.needsDisplay = true
         swapSwitch.isOn = AppState.shared.swapCmdCtrl
+        autoCenterSwitch.isOn = AppState.shared.autoCenter
         refreshStatus()
     }
 
     func refreshSettings() {
         sharingSwitch.isOn = AppState.shared.sharingEnabled
+        autoCenterSwitch.isOn = AppState.shared.autoCenter
         autostartSwitch.isOn = LoginItem.isEnabled
     }
 

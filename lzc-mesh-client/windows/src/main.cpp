@@ -50,7 +50,7 @@ std::wstring configPath() {
 }
 
 void saveConfig() {
-    std::string text = JsonOut().s("device_id", g.deviceId).s("box", g.boxOverride).b("sharing", g.sharingEnabled).str();
+    std::string text = JsonOut().s("device_id", g.deviceId).s("box", g.boxOverride).b("sharing", g.sharingEnabled).b("auto_center", g.autoCenter).str();
     HANDLE f = CreateFileW(configPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD w;
@@ -70,6 +70,7 @@ void loadConfig() {
             g.deviceId = j["device_id"].str();
             g.boxOverride = j["box"].str();
             g.sharingEnabled = j["sharing"].boolean(true);
+            g.autoCenter = j["auto_center"].boolean(true);
         }
     }
     if (g.deviceId.empty()) {
@@ -265,6 +266,13 @@ void onHubText(const std::string &text, uint64_t nativeGeneration = 0) {
         g.activeControlId = o["active"]["control_id"].str();
         if (g.controlled && g.receiveControlId.empty()) g.receiveControlId = g.activeControlId;
         g.swapCmdCtrl = o["settings"]["swap_cmd_ctrl"].boolean(true);
+        if (o["settings"]["auto_center"].type == Json::Bool) {
+            const bool ac = o["settings"]["auto_center"].boolean(true);
+            if (ac != g.autoCenter) {
+                g.autoCenter = ac;
+                saveConfig();
+            }
+        }
         g.nativeProtocol = o["settings"]["transport_mode"].type == Json::Str;
         g.transportMode = o["settings"]["transport_mode"].str("auto");
         g.inputEnabled = o["settings"]["input_enabled"].boolean(true);
@@ -540,6 +548,13 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_AUTOSTART:
         case tray::ID_TRAY_AUTOSTART: setAutostart(!autostart::enabled()); break;
         case ID_SWAP: hubws::send(JsonOut().s("t", "settings").b("swap_cmd_ctrl", !g.swapCmdCtrl).str()); break;
+        case ID_AUTOCENTER:
+            g.autoCenter = !g.autoCenter;
+            saveConfig();
+            hubws::send(JsonOut().s("t", "settings").b("auto_center", g.autoCenter).str());
+            logLine(g.autoCenter ? L"光标共享自动居中已开启" : L"光标共享自动居中已关闭");
+            mainwin::refresh();
+            break;
         case ID_TRANSPORT:
             if (HIWORD(w) == CBN_SELCHANGE) hubws::send(JsonOut().s("t", "settings").s("transport_mode", mainwin::selectedTransport()).str());
             break;

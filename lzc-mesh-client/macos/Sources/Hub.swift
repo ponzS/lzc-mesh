@@ -143,6 +143,15 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         if s.authVerified && !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
     }
 
+    func setAutoCenter(_ on: Bool) {
+        let s = AppState.shared
+        s.autoCenter = on
+        s.save()
+        send(["t": "settings", "auto_center": on])
+        s.log("光标共享自动居中已\(on ? "开启" : "关闭")")
+        s.onDevices?()
+    }
+
     func localActivity() {
         let s = AppState.shared
         guard s.operational, s.controlled else { return }
@@ -209,6 +218,10 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             let settings = o["settings"] as? [String: Any]
             s.transportMode = settings?["transport_mode"] as? String ?? "auto"
             s.swapCmdCtrl = settings?["swap_cmd_ctrl"] as? Bool ?? true
+            if let ac = settings?["auto_center"] as? Bool, ac != s.autoCenter {
+                s.autoCenter = ac
+                s.save()
+            }
             let clip = settings?["clipboard"] as? Bool ?? true
             if clip != s.clipboardEnabled { s.log("共享剪贴板已\(clip ? "开启" : "关闭")") }
             s.clipboardEnabled = clip
@@ -242,6 +255,8 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.captured = false
             receiveControlID = scope.isEmpty ? activeControlID : scope
             s.controlled = true
+            // Coordinates are authoritative at the sender/hub. Re-centering
+            // only here would jump back on the next absolute move or click.
             s.log(String(format: "被远程控制：光标进入本机 (%.2f, %.2f)", x, y))
             input.enter(x, y)
             s.updateControlStatus()
