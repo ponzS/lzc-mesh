@@ -1,5 +1,5 @@
-import { createKeyboard } from "./controller-keyboard.js?v=0.3.3"
-import { createTrackpad } from "./controller-trackpad.js?v=0.3.3"
+import { createKeyboard } from "./controller-keyboard.js?v=0.3.4"
+import { createTrackpad } from "./controller-trackpad.js?v=0.3.4"
 
 const $ = id => document.getElementById(id)
 const root = $("controller"), pad = $("touchpad"), bar = $("mobile-shortcuts"), input = $("mobile-input")

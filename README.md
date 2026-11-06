@@ -96,6 +96,8 @@ cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 
 ## 状态
 
+0.3.4 合入 [PR #1](https://github.com/ponzS/lzc-mesh/pull/1)，新增默认开启的“光标共享，自动居中”账号设置，Mac、Windows 和管理页面均可切换，Omarchy 通过共享核心生效（本地未增加开关）。开启时跨屏、第三屏交接及跨回源屏落在目标中央；关闭时保留原有共边比例入口。修正中枢转发和原生路径的累计坐标，避免下一次移动或点击回跳，保留 Windows 独立接收线程及既有位移、滚动和急停规则。安装包随 [v0.3.4 Release](https://github.com/ponzS/lzc-mesh/releases/tag/v0.3.4) 分发；协议、组件和构建验证不代表安装后的实体键鼠或蓝牙硬件验收，详见[集成验证](spec-tests/cursor-auto-center.md)。
+
 0.3.3 修复 Mac 远控操作 Windows 客户端自身标题栏时的偶发卡死：接收输入、鼠标松开、按键重复和接管释放不再等待主窗口消息循环，最小化跳过无效布局；关闭仍隐藏到托盘。生产输入组件在 Windows 实机上完成 18 次标题栏操作及断线释放验证，详见[修复记录](spec-tests/windows-caption-stall.md)。同时包含 0.3.2 的手机键盘触控板与沉浸模式，以及后续合入的边缘单指滚动、控制页自动开始和 iOS PWA 底部安全区调整，统一 LPK 和三端版本并更新下载链接；安装包随 [v0.3.3 Release](https://github.com/ponzS/lzc-mesh/releases/tag/v0.3.3) 分发，不代表已完成安装后 Mac→Windows 人工复测或蓝牙硬件验收。
 
 0.2.3 修复 Mac 触控板控制 Omarchy 时的周期性卡顿：实体键鼠接管监视器的设备扫描、能力查询和关闭移到后台，旧扫描结果不能污染新接收会话。用户更新后反馈“现在丝滑多了”。保留原位移、滚动及实体接管规则；Linux 暂时仅支持 Omarchy。详见[接收侧阻塞修复记录](spec-tests/linux-receiver-stall.md)。安装包现已在对应 GitHub Release 补齐；商店更新状态另计，此手感确认不代表六方向全部实体键鼠或蓝牙验收完成。

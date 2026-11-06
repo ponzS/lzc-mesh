@@ -3,7 +3,7 @@ CC ?= gcc
 PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client wayland-cursor xkbcommon cairo
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -std=gnu11 $(shell pkg-config --cflags $(PKGS)) -Ibuild
 LDLIBS += $(shell pkg-config --libs $(PKGS)) -lm
-VERSION ?= 0.3.3
+VERSION ?= 0.3.4
 CFLAGS += -DLZC_MESH_VERSION=\"$(VERSION)\"
 
 PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-shell \
