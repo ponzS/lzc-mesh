@@ -4,7 +4,7 @@ import { createTrackpad } from "./controller-trackpad.js?v=0.3.2"
 const $ = id => document.getElementById(id)
 const root = $("controller"), pad = $("touchpad"), bar = $("mobile-shortcuts"), input = $("mobile-input")
 const selector = $("target-device"), toggle = $("control-toggle")
-let ws, source = "", connected = false, active = null, pending = false, reconnectTimer, stopped = false
+let ws, source = "", connected = false, active = null, pending = false, reconnectTimer, stopped = false, manualStop = false
 let state = { devices:[], settings:{} }
 let notice = ""
 const ready = () => connected && !!active && !document.hidden
@@ -46,8 +46,11 @@ function render() {
   }
   for (const option of [...selector.options]) if (!seen.has(option.value)) option.remove()
   if (!selector.options.length) { const o=document.createElement("option"); o.value=""; o.textContent="暂无可用设备"; selector.appendChild(o) }
+  let savedTarget = ""
+  try { savedTarget = localStorage.getItem("lzc-mesh-target") || "" } catch {}
   if (active) selector.value = active.target
   else if ([...selector.options].some(o => o.value===previous && !o.disabled)) selector.value = previous
+  else if (savedTarget && [...selector.options].some(o => o.value===savedTarget && !o.disabled)) selector.value = savedTarget
   else selector.value = state.devices.find(eligible)?.id || ""
   const blocked = !connected || state.settings.input_enabled === false || ["direct","bluetooth"].includes(state.settings.transport_mode) || (state.active && state.active.source !== source)
   selector.disabled = !connected || pending
@@ -58,6 +61,7 @@ function render() {
   $("control-status").textContent = active ? "中枢转发 · 正在控制" : unavailable()
   $("input-notice").textContent = notice
   keyboard.update()
+  if (!manualStop && !active && !pending && !toggle.disabled && !document.hidden) startControl()
 }
 function connect() {
   if (stopped) return
@@ -100,12 +104,16 @@ function endControl() {
 }
 function startControl() {
   if (!connected || !selector.value || document.hidden) return
+  try { localStorage.setItem("lzc-mesh-target", selector.value) } catch {}
   cancelGestures(true); keyboard.reset(); notice=""; pending=true
   send({t:"web_control",target:selector.value}); render()
 }
-toggle.addEventListener("click", () => active ? endControl() : startControl())
-selector.addEventListener("change", () => { if (active) startControl() })
-$("mobile-home").addEventListener("click", endControl)
+toggle.addEventListener("click", () => {
+  if (active) { manualStop = true; endControl() }
+  else { manualStop = false; startControl() }
+})
+selector.addEventListener("change", () => { manualStop = false; startControl() })
+$("mobile-home").addEventListener("click", () => { manualStop = true; endControl() })
 bar.addEventListener("pointerdown", () => trackpad.reset(true), {capture:true})
 
 function layout() {
@@ -133,7 +141,8 @@ window.addEventListener("orientationchange", () => { cancelGestures(true); keybo
 new ResizeObserver(layout).observe(bar)
 
 window.addEventListener("blur", endControl)
-document.addEventListener("visibilitychange", () => { if(document.hidden) endControl() })
+window.addEventListener("focus", () => { if (!document.hidden) render() })
+document.addEventListener("visibilitychange", () => { if(document.hidden) endControl(); else render() })
 window.addEventListener("pagehide", () => {endControl();stopped=true;clearTimeout(reconnectTimer);ws?.close()})
 window.addEventListener("pageshow", event => {if(event.persisted) {stopped=false;connect()}})
 setInterval(() => {
