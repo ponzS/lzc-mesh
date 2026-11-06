@@ -28,7 +28,7 @@ def run(args):
   m.wait(lambda:browser.evaluate("document.querySelectorAll('[data-mobile-key]').length>15 && !document.getElementById('control-toggle').disabled"),'Controller did not join')
   def evaluate(js):return browser.evaluate(js)
   def start(target='linux'):
-   evaluate(f"document.getElementById('target-device').value={json.dumps(target)};document.getElementById('control-toggle').click()")
+   evaluate(f"document.getElementById('target-device').value={json.dumps(target)};if(document.getElementById('control-toggle').textContent==='开始控制')document.getElementById('control-toggle').click();else document.getElementById('target-device').dispatchEvent(new Event('change'))")
    return scene.state(lambda s:s['active'] and s['active']['source'].startswith('web:') and s['active']['target']==target)['active']
   def stop():
    evaluate("document.getElementById('control-toggle').click()")
@@ -38,6 +38,15 @@ def run(args):
   def tap(x=140,y=180):touch('touchStart',[(0,x,y)]);touch('touchEnd',[])
   def received(ws,predicate):
    messages=scene.drain(ws);m.require(predicate(messages),f'Expected input missing: {messages}');return messages
+  # Current main auto-starts eligible targets; do not click its active toggle
+  # as the previous explicit-start fixture did (that would now stop control).
+  scene.state(lambda s:s['active'] and s['active']['source'].startswith('web:'))
+  stop()
+  evaluate("window.dispatchEvent(new Event('focus'))")
+  time.sleep(.15)
+  scene.viewer.send(dict(t='hello',platform='web'))
+  m.require(scene.state()['active'] is None,'Manual stop was undone by focus/render')
+  passed('eligible target auto-starts on entry; manual stop survives focus/render')
   active=start();m.wait(lambda:evaluate("document.getElementById('current-device').textContent==='linux'"),'Target not shown')
   scene.viewer.send(dict(t='hello',platform='web'))
   m.require(len(scene.state(lambda s:s['active'])['devices'])==2,'Browser registered a persistent screen')
@@ -77,6 +86,12 @@ def run(args):
   touch('touchEnd',[])
   received(a,lambda ms:not any(x['t'] in ('wheel','button') for x in ms))
   passed('real CDP touch: one continuous fling, new touch cancels momentum immediately without a stray click')
+  for x in [15,375]:
+   scene.drain(a)
+   touch('touchStart',[(0,x,160)]);touch('touchMove',[(0,x,200)]);touch('touchEnd',[])
+   received(a,lambda ms:any(x['t']=='wheel' and x['dy']>0 and x['dx']==0 for x in ms) and not any(x['t'] in ('move','button') for x in ms))
+   touch('touchStart',[(0,140,180)]);touch('touchEnd',[]);scene.drain(a)
+  passed('real CDP touch: left/right edge single-finger natural scrolling without pointer or click leakage')
   def tap_control(selector):
    point=evaluate(f"(()=>{{const r=document.querySelector({json.dumps(selector)}).getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]}})()")
    tap(*point)
@@ -95,12 +110,12 @@ def run(args):
   received(a,lambda ms:any(x['t']=='clipboard' and x['text']=='你好' for x in ms) and not any(x['t']=='key' for x in ms))
   m.require(evaluate("document.getElementById('input-notice').textContent.includes('Ctrl+V')"),'Manual paste guidance missing')
   passed('system-keyboard focus, ASCII, one-shot sticky chord, delete, explicit Unicode clipboard staging')
-  # Consume remaining width to hand off while the finger remains on the surface.
-  touch('touchStart',[(0,30,180)]);touch('touchMove',[(0,350,180)])
+  # Start away from the new edge-scroll zone; keep this a pointer handoff.
+  touch('touchStart',[(0,100,180)]);touch('touchMove',[(0,420,180)])
   scene.state(lambda s:s['active'] and s['active']['target']=='win')
   m.wait(lambda:evaluate("document.getElementById('current-device').textContent==='win'"),'Cross-screen target not reflected')
   m.require(evaluate("document.activeElement.id==='mobile-input'"),'Handoff hid system keyboard')
-  scene.drain(b);touch('touchMove',[(0,360,180)]);touch('touchEnd',[])
+  scene.drain(b);touch('touchMove',[(0,430,180)]);touch('touchEnd',[])
   received(b,lambda ms:any(x['t']=='move' for x in ms))
   passed('automatic cross-screen handoff continues same finger gesture and preserves keyboard focus')
   # Host values override env(), and explicit zero means already-inset content.
