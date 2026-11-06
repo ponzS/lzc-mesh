@@ -8,6 +8,10 @@ domains:
       - spec-tests/device-*.py
       - spec-tests/linux-local-input.c
       - spec-tests/windows-outbox.cpp
+      - spec-tests/windows-receiver.cpp
+      - spec-tests/windows-direct-receiver.cpp
+      - spec-tests/windows-caption-os.cpp
+      - spec-tests/build-windows-receiver-tests.sh
       - spec-tests/browser-probe.mjs
       - lzc-mesh-client/windows/src/**
       - lzc-mesh-client/windows/build.sh
@@ -29,3 +33,6 @@ domains:
       - lzc-mesh-client/windows/src/capture_pointer.h
       - lzc-mesh-client/windows/src/json.*
       - spec-tests/windows-input.cpp
+      - spec-tests/windows-receiver.cpp
+      - spec-tests/windows-direct-receiver.cpp
+      - spec-tests/windows-caption-os.cpp

@@ -24,6 +24,7 @@
 #include "identity.h"
 #include "lzc.h"
 #include "net.h"
+#include "receiver.h"
 
 App g;
 
@@ -31,7 +32,6 @@ namespace {
 using namespace mainwin;
 long long serviceCheckedAt = 0;
 bool probing = false;
-long long lastMoveLog = 0;
 UINT taskbarCreated = 0;
 UINT quitMessage = 0;   // sent by the installer / uninstaller
 bool quitting = false;
@@ -122,7 +122,7 @@ void refreshClientActivity() {
         was = on;
         files::setActive(on);
         clipboard::setActive(on);
-        if (on) { direct::connected(onInputMessage); input::start(); }
+        if (on) { direct::connected(); input::start(); }
         else {
             direct::disconnect();
             bluetooth::stop();
@@ -135,6 +135,7 @@ void refreshClientActivity() {
         logLine(on ? L"客户端已开启" : L"客户端已休眠：共享功能已停止，保留远程唤醒连接");
     }
     input::setSharing(on && g.sharingEnabled && g.inputEnabled);
+    receiver::setEnabled(on && g.sharingEnabled && g.inputEnabled);
     if (!on) {
         setStatus(S_INPUT, L_UNKNOWN, L"客户端未运行共享功能，输入钩子已停止");
         for (int key : {S_TRANSPORT, S_POINTER_CHANNEL, S_KEYBOARD_CHANNEL}) setStatus(key, L_UNKNOWN,
@@ -193,52 +194,40 @@ void onInputMessage(const Json &o) {
     const auto t = o["t"].str();
     const double x = o["x"].num(0.5), y = o["y"].num(0.5);
     const auto scope = o["_control_session"].str();
-    const bool begin = t == "direct_active" && !o["source"].str().empty();
-    if (!(begin ? mesh_input_gate_begin(&g.inputGate, scope.c_str()) : mesh_input_gate_accept(&g.inputGate, scope.c_str()))) return;
-    if (scope.empty() && !g.blockedControlId.empty() && g.blockedControlId == g.activeControlId &&
-        (t == "enter" || t == "capture" || t == "move" || t == "key" || t == "button" || t == "wheel")) return;
+    // receiver already validated the scope; these are presentation notices.
+    // Do not run a second independent gate that can diverge during modal UI.
     if (t == "direct_active") {
         g.activeSource = o["source"].str(); g.activeTarget = o["target"].str();
         updateControlStatus();
     } else if (t == "release") {
         const bool was = g.captured;
         g.captured = false; input::capture(false);
-        if (o["warp"].boolean()) input::warp(x, y);
         if (was) logLine(L"控制已收回本机");
         updateControlStatus();
     } else if (t == "leave") {
         const bool was = g.controlled;
-        g.controlled = false; input::leave();
+        if (g.captured) input::capture(false);
+        g.captured = g.controlled = false;
         if (was) logLine(L"远程控制结束");
         updateControlStatus();
     } else if (!g.operational() || !g.inputEnabled || !g.sharingEnabled) {
         return;
     } else if (t == "capture") {
-        if (g.controlled) input::leave();
         g.controlled = false;
-        g.captured = true; input::capture(true, scope);
+        g.captured = true; input::capture(true, scope, (uint64_t)o["_receiver_role"].num());
         logLine(L"开始控制其他设备"); updateControlStatus();
     } else if (t == "enter") {
         if (g.captured) input::capture(false);
         g.captured = false;
         g.receiveControlId = scope.empty() ? g.activeControlId : scope;
-        g.controlled = true; input::enter(x, y);
+        g.controlled = input::receiving();
         logLine(fmt(L"被远程控制：光标进入本机 (%.2f, %.2f)", x, y)); updateControlStatus();
-    } else if (t == "move" && g.controlled && input::receiving()) {
-        input::move(x, y);
-        if (GetTickCount64() - lastMoveLog > 2000) {
-            lastMoveLog = GetTickCount64(); logLine(fmt(L"收到远程光标 (%.3f, %.3f)", x, y));
-        }
-    } else if (t == "button" && g.controlled && input::receiving()) {
-        input::button((int)o["button"].num(1), o["down"].boolean());
-    } else if (t == "wheel" && g.controlled && input::receiving()) {
-        input::wheel(o["dx"].num(), o["dy"].num());
-    } else if (t == "key" && g.controlled && input::receiving()) {
-        input::key((uint32_t)o["code"].num(), o["down"].boolean());
     }
+    // Movement, buttons, keys and repeat timers are executed by receiver, not
+    // here: this UI can be inside a caption, menu, sizing or file-dialog loop.
 }
 
-void onHubText(const std::string &text) {
+void onHubText(const std::string &text, uint64_t nativeGeneration = 0) {
     Json o;
     if (!Json::parse(text, o) || !o.isObj()) return;
     std::string t = o["t"].str();
@@ -282,7 +271,6 @@ void onHubText(const std::string &text) {
         refreshClientActivity();
         if (!g.inputEnabled) {
             if (g.captured) input::capture(false);
-            if (g.controlled) input::leave();
             g.captured = g.controlled = false;
         }
         if (!g.nativeProtocol) {
@@ -306,7 +294,8 @@ void onHubText(const std::string &text) {
     } else if (t == "error") {
         logLine(L"服务端错误：" + widen(o["message"].str()));
     } else onInputMessage(o);
-    direct::hub(text);
+    // UI may have replaced the native session while applying this state.
+    if (!direct::isCurrent(nativeGeneration)) direct::hub(text);
 }
 
 void onHubClosed(int httpStatus, const std::wstring &why) {
@@ -328,7 +317,6 @@ void onHubClosed(int httpStatus, const std::wstring &why) {
         if (httpStatus == 401 || httpStatus == 302 || httpStatus == 307) g.cookie.clear(), serviceCheckedAt = 0;
     }
     if (g.captured) input::capture(false);
-    if (g.controlled) input::leave();
     g.captured = g.controlled = false;
     g.activeSource.clear(); g.activeTarget.clear();
     input::setEdges(false, false, false, false);
@@ -427,9 +415,10 @@ void setSharing(bool on) {
     g.sharingEnabled = on;
     saveConfig();
     input::setSharing(g.operational() && on && g.inputEnabled);
+    receiver::setEnabled(g.operational() && on && g.inputEnabled);
     // Give the cursor back at once if this PC is controlling another device.
     if (!on && g.captured) input::releaseRemote();
-    if (!on && g.controlled) { input::leave(); g.controlled = false; }
+    if (!on) g.controlled = false;
     hubws::send(JsonOut().s("t", "sharing").b("enabled", on).str());
     logLine(on ? L"键鼠共享已开启" : L"键鼠共享已暂停");
     updateControlStatus();
@@ -483,7 +472,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         mainwin::onDpi(h);
         return 0;
     }
-    case WM_SIZE: mainwin::layout(h); return 0;
+    case WM_SIZE:
+        if (w != SIZE_MINIMIZED) mainwin::layout(h);
+        return 0;
+    case WM_SHOWWINDOW:
+        if (w) { mainwin::refresh(); mainwin::layout(h); }
+        break;
     case WM_VSCROLL: mainwin::scroll(LOWORD(w)); return 0;
     case WM_MOUSEWHEEL: {
         POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(h, &pt);
@@ -595,8 +589,8 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         tray::refresh();
         return 0;
     case WM_APP_HUB_TEXT: {
-        std::string *s = (std::string *)l;
-        if (hubws::isCurrent(static_cast<unsigned>(w))) onHubText(*s);
+        auto *s = reinterpret_cast<hubws::Text *>(l);
+        if (hubws::isCurrent(static_cast<unsigned>(w))) onHubText(s->text, s->nativeGeneration);
         delete s;
         return 0;
     }
@@ -618,20 +612,24 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_APP_DIRECT: direct::drain(); return 0;
+    case WM_APP_RECEIVER: {
+        auto *notice = reinterpret_cast<receiver::Notice *>(l);
+        if (receiver::current(*notice)) {
+            const auto type = notice->message["t"].str();
+            if (type == "local_activity" || type == "receiver_overflow") {
+                if (g.captured) input::capture(false);
+                g.captured = g.controlled = false;
+                logLine(type == "local_activity" ? L"检测到本机实体输入，已收回控制并释放远程按键和按钮" : L"接收输入队列超限，已安全停止共享");
+                if (type == "receiver_overflow") hubws::close();
+                updateControlStatus();
+            } else onInputMessage(notice->message);
+        }
+        delete notice;
+        return 0;
+    }
     case WM_APP_INPUT:
         if (!g.operational()) return 0;
-        if (w == 4) {
-            if (!g.controlled || (uint64_t)l != input::receiveEpoch()) { input::completeLocalActivity((uint64_t)l,false); return 0; }
-            const auto id = g.receiveControlId;
-            mesh_input_gate_cancel(&g.inputGate);
-            g.blockedControlId = id;
-            g.controlled = false;
-            input::leave();
-            if (!id.empty()) direct::send(JsonOut().s("t", "local_activity").s("control_id", id).str());
-            input::completeLocalActivity((uint64_t)l,true);
-            logLine(L"检测到本机实体输入，已收回控制并释放远程按键和按钮");
-            updateControlStatus();
-        }
+        if (w == 5) logLine(L"本机接管输入积压超限，已安全丢弃，未回放按键");
         else if (w == 3) {
             if ((uint64_t)l != input::captureGeneration()) return 0;
             logLine(L"输入捕获未就绪或队列超限，已安全收回控制");
@@ -768,6 +766,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     int ww = std::min(MulDiv(1240, sysDpi, 96), (int)(work.right - work.left) - MulDiv(40, sysDpi, 96));
     int wh = std::min(MulDiv(880, sysDpi, 96), (int)(work.bottom - work.top) - MulDiv(40, sysDpi, 96));
+    receiver::start();
     HWND h = CreateWindowExW(0, wc.lpszClassName, L"懒猫设备接力", WS_OVERLAPPEDWINDOW | WS_VSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh, nullptr, nullptr, inst, nullptr);
     logLine(L"懒猫设备接力 Windows " LZC_MESH_VERSION L" 启动，设备 ID " + widen(g.deviceId) + (input::isElevated() ? L"（管理员）" : L""));
     input::setSharing(false);
@@ -783,6 +782,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         }
     }
     input::stop();
+    receiver::shutdown();
     identity::shutdown();
     // Close the writer before another instance acquires the mutex on restart.
     if (logFile != INVALID_HANDLE_VALUE) { CloseHandle(logFile); logFile = INVALID_HANDLE_VALUE; }

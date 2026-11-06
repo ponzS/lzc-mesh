@@ -8,6 +8,8 @@
 #include <mutex>
 #include <thread>
 #include "outbox.h"
+#include "receiver.h"
+#include "direct.h"
 
 #include "app.h"
 
@@ -120,13 +122,14 @@ std::shared_ptr<Connection> getCurrent() { std::lock_guard<std::mutex> lock(curr
 
 void post(UINT msg, WPARAM w, LPARAM l) {
     if (!PostMessageW(g.hwnd,msg,w,l)) {
-        if (msg==WM_APP_HUB_TEXT) delete reinterpret_cast<std::string *>(l);
+        if (msg==WM_APP_HUB_TEXT) delete reinterpret_cast<Text *>(l);
         if (msg==WM_APP_HUB_CLOSED) delete reinterpret_cast<Closed *>(l);
         if (msg==WM_APP_NET_LOG) delete reinterpret_cast<std::wstring *>(l);
     }
 }
 void stop(const std::shared_ptr<Connection> &c, int status, const std::wstring &why) {
     c->stopping=true; c->outbox.stop();
+    receiver::closeHub(c->generation);
     if (!c->notified.exchange(true)) post(WM_APP_HUB_CLOSED,0,reinterpret_cast<LPARAM>(new Closed{c->generation,status,why}));
     if (c->closing.exchange(true)) return;
     // The protocol close may wait for the peer or an in-progress send. Neither
@@ -198,8 +201,16 @@ void run(const std::shared_ptr<Connection> &c, std::wstring host, std::wstring c
             message.append(bytes.data(),read);
             if (message.size()>(1u<<20)) { why=L"中枢消息超限"; break; }
             if (type==WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE || type==WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) continue;
-            if (type==WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE && !c->stopping)
-                post(WM_APP_HUB_TEXT,c->generation,reinterpret_cast<LPARAM>(new std::string(std::move(message))));
+            if (type==WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE && !c->stopping) {
+                Json value;
+                const bool parsed = Json::parse(message, value);
+                // Button-up, release and native relay/lease processing cannot
+                // wait for DefWindowProc's caption/menu tracking on the UI.
+                const bool consumed = parsed && receiver::hub(value, c->generation);
+                const uint64_t forwarded = consumed ? 0 : direct::network(message);
+                if (!consumed && (!forwarded || value["t"].str() == "state"))
+                    post(WM_APP_HUB_TEXT,c->generation,reinterpret_cast<LPARAM>(new Text{std::move(message), forwarded}));
+            }
             message.clear();
         }
     }
@@ -207,6 +218,7 @@ void run(const std::shared_ptr<Connection> &c, std::wstring host, std::wstring c
 }
 } // namespace
 
+unsigned generation() { auto c=getCurrent(); return c ? c->generation : 0; }
 bool busy() { auto c=getCurrent(); return c && !c->finished && (!c->opened || c->stopping); }
 bool isCurrent(unsigned generation, bool allowStopped) {
     auto c=getCurrent(); return c && c->generation==generation && (allowStopped || !c->stopping);
@@ -220,12 +232,14 @@ void connect(const std::wstring &host,const std::wstring &cookie) {
         current=c=std::make_shared<Connection>(++nextGeneration);
     }
     if (retired) std::thread([old=std::move(retired)]() mutable { old.reset(); }).detach();
+    receiver::bindHub(c->generation);
     std::thread(run,c,host,cookie).detach();
 }
 void close() { if (auto c=getCurrent()) stop(c,0,L"客户端关闭管理连接"); }
-void send(const std::string &text) {
+void send(const std::string &text) { sendFor(generation(), text); }
+void sendFor(unsigned generation, const std::string &text) {
     auto c=getCurrent();
-    if (!c || !c->opened || c->stopping) return;
+    if (!c || c->generation != generation || !c->opened || c->stopping) return;
     if (!c->outbox.push(text) && !c->stopping) stop(c,0,L"中枢发送队列超限，连接已安全停止");
 }
 } // namespace hubws

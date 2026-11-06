@@ -6,6 +6,7 @@
 // Windows client to prevent the two copies' global hooks from interfering.
 #include "../lzc-mesh-client/windows/src/app.h"
 #include "../lzc-mesh-client/windows/src/input.h"
+#include "../lzc-mesh-client/windows/src/receiver.h"
 #include "../lzc-mesh-client/windows/src/capture_pointer.h"
 #include <cstdarg>
 #include <cmath>
@@ -20,6 +21,7 @@ std::vector<std::wstring> captureLogs;
 std::wstring fmt(const wchar_t *format,...) {wchar_t text[1024];va_list args;va_start(args,format);vswprintf(text,1024,format,args);va_end(args);return text;}
 void logLine(const std::wstring &text) {captureLogs.push_back(text);}
 namespace direct {
+void applied(const Json &) {}
 uint64_t nowUs() {return uint64_t(GetTickCount64())*1000;}
 void send(const std::string &text) {Json v;if(Json::parse(text,v)){std::lock_guard<std::mutex> lock(framesMutex);frames.push_back(v);}}
 }
@@ -133,9 +135,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int) {
     g.hwnd=window;SetForegroundWindow(window);SetFocus(window);
     MONITORINFO info{sizeof info};GetMonitorInfoW(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY),&info);
     anchor=POINT{(info.rcMonitor.left+info.rcMonitor.right)/2,(info.rcMonitor.top+info.rcMonitor.bottom)/2};
-    input::start();running=true;started=GetTickCount();SetTimer(window,1,20,nullptr);
+    receiver::start();input::start();running=true;started=GetTickCount();SetTimer(window,1,20,nullptr);
     MSG message;while(GetMessageW(&message,nullptr,0,0)>0){TranslateMessage(&message);DispatchMessageW(&message);}
-    input::stop();running=false;
+    input::stop();receiver::shutdown();running=false;
     if(unlocked()&&GetForegroundWindow()==window){SetCursorPos(original.x,original.y);Sleep(20);}
     DestroyWindow(window);if(IsWindow(previousForeground))SetForegroundWindow(previousForeground);
     std::string list="[";for(const auto &result:results){if(list.size()>1)list+=',';list+=result;}list+=']';Json items;Json::parse(list,items);

@@ -4,6 +4,7 @@
 
 namespace bluetooth {
 // The worker owns native RFCOMM sockets only. Rust owns TLS and input grants.
+void bind(uint64_t generation);
 void event(const Json &json, uint64_t generation);
 void stop();
 void shutdown();

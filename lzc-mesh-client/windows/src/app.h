@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "json.h"
-#include "../../transport/input_gate.h"
 
 #define LZC_MESH_VERSION "0.2.3"
 
@@ -47,7 +46,7 @@ struct MeshDevice {
 // Messages posted to the main window from other threads.
 enum {
     WM_APP_PROBE = WM_APP + 1,  // lParam: Probe*
-    WM_APP_HUB_TEXT,            // lParam: std::string*
+    WM_APP_HUB_TEXT,            // lParam: hubws::Text* (management/presentation only)
     WM_APP_HUB_OPEN,
     WM_APP_HUB_CLOSED,          // lParam: hubws::Closed*, includes connection generation
     WM_APP_EDGE,                // wParam: dir, lParam: pos*10000
@@ -57,6 +56,7 @@ enum {
     WM_APP_TRAY,                // notification-area icon callback
     WM_APP_DIRECT,              // drain ordered native transport callbacks on the UI thread
     WM_APP_NET_LOG,             // bounded network diagnostics, no message contents
+    WM_APP_RECEIVER,            // receiver::Notice*, presentation only
 };
 
 struct App {
@@ -67,8 +67,7 @@ struct App {
     bool hubConnected = false;
     std::string hubUser;
     std::vector<MeshDevice> devices;
-    std::string activeSource, activeTarget, activeControlId, receiveControlId, blockedControlId;
-    MeshInputGate inputGate{};
+    std::string activeSource, activeTarget, activeControlId, receiveControlId;
     bool swapCmdCtrl = true;
     bool clipboardEnabled = false;
     bool sharingEnabled = true;   // keyboard/mouse sharing switch (tray / header), persisted

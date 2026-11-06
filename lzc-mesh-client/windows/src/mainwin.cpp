@@ -146,8 +146,9 @@ void onDpi(HWND h) {
 }
 
 void layout(HWND h) {
+    if (IsIconic(h)) return;
     RECT rc;
-    GetClientRect(h, &rc);
+    if (!GetClientRect(h, &rc) || rc.right <= 0 || rc.bottom <= 0) return;
     const int pad = S(20), gap = S(14), inner = S(16), titleH = S(40);
     const int rightW = std::min(S(450), std::max(S(360), (int)(rc.right * 0.38)));
     int top = S(HEADER);
@@ -341,7 +342,7 @@ void refresh() {
     SetWindowTextW(hPause, g.inputEnabled ? L"暂停全部键鼠接力" : L"恢复全部键鼠接力");
     layoutview::refresh();
     // Status text heights can change; relayout repositions the buttons under them.
-    layout(g.hwnd);
+    if (IsWindowVisible(g.hwnd)) layout(g.hwnd);
 }
 
 void showElevate(bool show) {

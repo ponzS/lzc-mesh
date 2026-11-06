@@ -2,6 +2,7 @@
 // WebSocket to the hub. Runs on worker threads and posts results to the UI.
 #pragma once
 #include <string>
+#include <cstdint>
 
 struct HttpResult {
     int status = 0;          // HTTP status, 0 on transport failure
@@ -16,9 +17,12 @@ HttpResult httpGet(const std::wstring &url, const std::wstring &headers);
 // WM_APP_HUB_OPEN / WM_APP_HUB_TEXT / WM_APP_HUB_CLOSED to the main window.
 namespace hubws {
 struct Closed { unsigned generation; int status; std::wstring reason; };
+struct Text { std::string text; uint64_t nativeGeneration = 0; };
 bool busy();
+unsigned generation();
 bool isCurrent(unsigned generation, bool allowStopped = false);
 void connect(const std::wstring &host, const std::wstring &cookie);
 void close();
 void send(const std::string &text);  // bounded enqueue only; never waits for network I/O
+void sendFor(unsigned generation, const std::string &text); // fences retired native callbacks
 }

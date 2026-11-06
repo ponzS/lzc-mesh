@@ -19,7 +19,8 @@ namespace bluetooth {
 namespace {
 using Clock = std::chrono::steady_clock;
 struct Command { Json value; uint64_t generation; };
-std::mutex commandMutex;
+std::mutex lifecycleMutex, commandMutex;
+uint64_t acceptingGeneration = 0;
 std::condition_variable commandReady;
 std::deque<Command> commands;
 std::thread worker;
@@ -261,16 +262,31 @@ void enqueue(Json value, uint64_t generation) {
 }
 Json control(const char *kind) { Json v; Json::parse(JsonOut().s("_lan", kind).str(), v); return v; }
 }
+void bind(uint64_t generation) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    acceptingGeneration = generation;
+}
 void event(const Json &value, uint64_t generation) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    if (!generation || generation != acceptingGeneration) return;
     if (!started) { started = true; worker = std::thread(run); }
     enqueue(value, generation);
 }
-void stop() { if (started) enqueue(control("_stop"), 0); }
+void stop() {
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    acceptingGeneration = 0;
+    if (started) enqueue(control("_stop"), 0);
+}
 void shutdown() {
-    if (!started) return;
-    enqueue(control("_shutdown"), 0);
-    if (worker.joinable()) worker.join();
-    started = false;
+    std::thread retired;
+    {
+        std::lock_guard<std::mutex> lock(lifecycleMutex);
+        acceptingGeneration = 0;
+        if (!started) return;
+        enqueue(control("_shutdown"), 0);
+        retired = std::move(worker); started = false;
+    }
+    if (retired.joinable()) retired.join();
     std::lock_guard<std::mutex> lock(commandMutex); commands.clear();
 }
 }

@@ -4,6 +4,7 @@
 #include "input_queue.h"
 #include "pointer_math.h"
 #include "capture_pointer.h"
+#include "receiver.h"
 
 #include <algorithm>
 #include <atomic>
@@ -36,7 +37,7 @@ void physicalActivity() {
     if ((state & 1) && receiverState.compare_exchange_strong(state, state & ~uint64_t(1))) {
         std::lock_guard<std::mutex> lock(localMutex);
         localEpoch = state >> 1; localPending.clear(); localOverflow = false;
-        PostMessageW(g.hwnd, WM_APP_INPUT, 4, (LPARAM)localEpoch);
+        receiver::localActivity(localEpoch);
     }
 }
 std::atomic<uint64_t> captureEpoch{0};
@@ -353,7 +354,7 @@ void hookLoop() {
 
 std::set<uint32_t> heldKeys;
 std::set<int> heldButtons;
-bool blockedReported = false;
+std::atomic<bool> blockedReported{false};
 WheelRemainder wheelX, wheelY;
 
 void sendInputs(INPUT *in, UINT n) {
@@ -436,7 +437,7 @@ void start() {
 void stop() {
     if (!started) return;
     started = false;
-    if (captured) capture(false);
+    capture(false); // also hide an overlay canceled asynchronously by receiver
     leave();
     if (hookThreadId) PostThreadMessageW(hookThreadId, WM_QUIT, 0, 0);
     if (hookThread.joinable()) hookThread.join();
@@ -450,14 +451,16 @@ void setEdges(bool l, bool r, bool u, bool d) { edges[0] = l; edges[1] = r; edge
 void setHubConnected(bool on) { hubOn = on; }
 void setSharing(bool on) { sharingOn = on; }
 
-void capture(bool on, const std::string &session) {
+void cancelCapture() { captured = false; sourcePointer.end(); ++captureEpoch; }
+
+void capture(bool on, const std::string &session, uint64_t receiverRole) {
+    if (on && receiverRole && !receiver::sourceCurrent(receiverRole)) return;
     const bool wasCaptured=captured.exchange(false);
     if (parkTimer) {KillTimer(nullptr,parkTimer);parkTimer=0;}
     sourcePointer.end();
     const auto epoch=++captureEpoch;
     { std::lock_guard<std::mutex> lock(qmu); queue.clear(); sourceSession = on ? session : ""; }
     if (on) {
-        receiverState.fetch_and(~uint64_t(1));
         mappedKeys = unmappedKeys = 0;
         {
             std::unique_lock<std::mutex> lock(hookMutex);
@@ -468,6 +471,7 @@ void capture(bool on, const std::string &session) {
                 return;
             }
         }
+        if (captureEpoch != epoch || (receiverRole && !receiver::sourceCurrent(receiverRole))) return;
         HMONITOR mon = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO mi{sizeof mi};
         if (!GetMonitorInfoW(mon, &mi)) {PostMessageW(g.hwnd,WM_APP_INPUT,3,(LPARAM)epoch);return;}
@@ -488,6 +492,9 @@ void capture(bool on, const std::string &session) {
             captured=false;sourcePointer.end();
             PostMessageW(g.hwnd,WM_APP_INPUT,3,(LPARAM)epoch);
         }
+        // The executor may have received enter/release during hook re-arming.
+        // A late UI notice must not re-enable source swallowing over a receiver.
+        if (captureEpoch != epoch || (receiverRole && !receiver::sourceCurrent(receiverRole))) { cancelCapture(); showOverlay(false); }
         logLine(fmt(L"pointer_capture epoch=%llu park=(%ld,%ld) marked=1",(unsigned long long)epoch,anchor.x,anchor.y));
     } else {
         if (wasCaptured) logLine(fmt(L"keyboard_capture mapped=%llu unmapped=%llu", (unsigned long long)mappedKeys.load(), (unsigned long long)unmappedKeys.load()));
@@ -498,11 +505,13 @@ void capture(bool on, const std::string &session) {
 }
 
 void warp(double nx, double ny) {
+    if (receiver::defer([=] { warp(nx, ny); })) return;
     quietUntil = nowMs() + 400;
     move(nx,ny);  // marked, so a late return cannot displace a fresh capture
 }
 
 void move(double nx, double ny) {
+    if (receiver::defer([=] { move(nx, ny); })) return;
     INPUT in{};
     in.type = INPUT_MOUSE;
     if (!std::isfinite(nx) || !std::isfinite(ny)) return;
@@ -513,6 +522,7 @@ void move(double nx, double ny) {
 }
 
 void completeLocalActivity(uint64_t epoch, bool replay) {
+    if (receiver::defer([=] { completeLocalActivity(epoch, replay); })) return;
     // A hardware burst may continue while batches are replayed. If a later
     // batch overflows, release any downs already replayed before failing closed.
     std::map<uint64_t,INPUT> recovery;
@@ -533,7 +543,7 @@ void completeLocalActivity(uint64_t epoch, bool replay) {
                 for (const auto &entry:recovery) releases.push_back(entry.second);
                 if (!releases.empty()) sendInputs(releases.data(),(UINT)releases.size());
             }
-            if (overflowed) logLine(L"本机接管输入积压超限，已安全丢弃，未回放按键");
+            if (overflowed) PostMessageW(g.hwnd, WM_APP_INPUT, 5, 0);
             if (replay && !overflowed) {
                 quietUntil=nowMs();
                 POINT point{};if(GetCursorPos(&point))edgeCheck(point);
@@ -572,6 +582,10 @@ bool receiving() { return receiverOn(); }
 uint64_t receiveEpoch() { return receiverState.load() >> 1; }
 
 void enter(double nx, double ny) {
+    if (receiver::defer([=] { enter(nx, ny); })) return;
+    // Stop source swallowing before receiver injection, even if the UI has not
+    // yet processed its presentation-only role-change notification.
+    cancelCapture();
     const auto next = ((receiverState.load() >> 1) + 1) << 1;
     receiverState = next | 1;
     quietUntil = nowMs() + 400;
@@ -579,6 +593,7 @@ void enter(double nx, double ny) {
 }
 
 void button(int b, bool down) {
+    if (receiver::defer([=] { button(b, down); })) return;
     INPUT in{};
     in.type = INPUT_MOUSE;
     switch (b) {
@@ -596,6 +611,7 @@ void button(int b, bool down) {
 }
 
 void wheel(double dx, double dy) {
+    if (receiver::defer([=] { wheel(dx, dy); })) return;
     INPUT in[2]{};
     UINT n = 0;
     const auto y = wheelY.consume(dy), x = wheelX.consume(-dx);
@@ -650,7 +666,7 @@ void stopRepeat() {
 
 void CALLBACK repeatProc(HWND, UINT, UINT_PTR id, DWORD) {
     Sc s;
-    if (id != repeatTimer || !heldKeys.count(repeatKey) || !evdevToScan(repeatKey, s)) {
+    if (id != repeatTimer || !receiverOn() || !receiver::acceptingInput() || !heldKeys.count(repeatKey) || !evdevToScan(repeatKey, s)) {
         KillTimer(nullptr, id);
         if (id == repeatTimer) stopRepeat();
         return;
@@ -672,6 +688,7 @@ void startRepeat(uint32_t e) {
 }  // namespace
 
 void key(uint32_t e, bool down) {
+    if (receiver::defer([=] { key(e, down); })) return;
     Sc s;
     if (!evdevToScan(e, s)) return;
     if (down) heldKeys.insert(e);
@@ -682,6 +699,7 @@ void key(uint32_t e, bool down) {
 }
 
 void leave() {
+    if (receiver::defer([] { leave(); })) return;
     stopRepeat();
     wheelX.value = wheelY.value = 0;
     for (uint32_t k : std::set<uint32_t>(heldKeys)) key(k, false);
