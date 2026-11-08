@@ -14,7 +14,7 @@ typedef struct {
 } Status;
 
 enum {
-    S_LZC_CLIENT,   // LazyCat desktop client running and local API reachable
+    S_LZC_CLIENT,   // LazyCat desktop client or hclient-cli local API reachable
     S_LZC_NETWORK,  // selected box status as reported by the LazyCat client
     S_LOGIN,        // session cookie for the box obtained
     S_SERVICE,      // LZC Mesh LPK reachable on the box

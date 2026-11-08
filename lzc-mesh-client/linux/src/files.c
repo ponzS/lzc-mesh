@@ -43,6 +43,7 @@ static SoupMessage *request(const char *method, const char *name) {
     char *esc = g_uri_escape_string(name, NULL, FALSE);
     char *url = g_strdup_printf("https://lzc-mesh.%s/api/files/%s", app.box_domain, esc);
     SoupMessage *message = soup_message_new(method, url);
+    soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
     char *cookie = g_strdup_printf("Lzc-Auth-Token=%s", app.cookie ? app.cookie : "");
     char *device = g_uri_escape_string(g_get_host_name(), NULL, FALSE);
     SoupMessageHeaders *headers = soup_message_get_request_headers(message);

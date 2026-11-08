@@ -386,6 +386,7 @@ void net_connect(void) {
     if (!session) session = soup_session_new_with_options("user-agent", "lzc-mesh-linux/" LZC_MESH_VERSION, NULL);
     char *url = lzc_hub_url();
     SoupMessage *m = soup_message_new("GET", url);
+    soup_message_add_flags(m, SOUP_MESSAGE_NO_REDIRECT);
     char *cookie = g_strdup_printf("Lzc-Auth-Token=%s", app.cookie);
     soup_message_headers_append(soup_message_get_request_headers(m), "Cookie", cookie);
     connecting = true;

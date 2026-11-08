@@ -78,6 +78,10 @@ cd lzc-mesh-client/linux && make && make dist   # tar.gz
 cd lzc-mesh-client/linux && make pkg            # Arch package, needs makepkg
 ```
 
+The Linux client can be built natively on `x86_64` and `aarch64` Omarchy. `make dist` names its archive after the host architecture; `make pkg` preserves the compression format configured in makepkg. See the [ARM Linux build report](spec-tests/linux-aarch64-build.md) for local aarch64 validation. The download table above still describes upstream release assets.
+
+When no desktop client configuration exists, the Linux client can discover microservers and obtain the login session from a signed-in `hclient-cli`. Validated with hclient-cli 1.5.1 using TUN; see the [CLI integration notes](lzc-mesh-client/linux/HCLIENT-CLI.md).
+
 Output goes to `lzc-mesh-lpk/dist/` and `lzc-mesh-client/dist/`. The macOS `build.sh` produces both the dmg and the zip.
 
 ## Permissions

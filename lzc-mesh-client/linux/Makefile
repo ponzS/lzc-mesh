@@ -4,6 +4,7 @@ PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client wayland-cursor xkbcommon ca
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -std=gnu11 $(shell pkg-config --cflags $(PKGS)) -Ibuild
 LDLIBS += $(shell pkg-config --libs $(PKGS)) -lm
 VERSION ?= 0.3.4
+ARCH ?= $(shell uname -m)
 CFLAGS += -DLZC_MESH_VERSION=\"$(VERSION)\"
 
 PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-shell \
@@ -11,7 +12,7 @@ PROTOCOLS = wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-
 	wlr-data-control-unstable-v1
 PROTO_H = $(PROTOCOLS:%=build/%-client-protocol.h)
 PROTO_C = $(PROTOCOLS:%=build/%-protocol.c)
-SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/wl_input.c src/config.c src/clipboard.c src/files.c src/tray.c src/autostart.c src/direct.c src/bluetooth.c src/identity.c src/local_input.c
+SRC = src/main.c src/ui.c src/layout_view.c src/net.c src/lzc.c src/lzc_cli.c src/lzc_http.c src/wl_input.c src/config.c src/clipboard.c src/files.c src/tray.c src/autostart.c src/direct.c src/bluetooth.c src/identity.c src/local_input.c
 OBJ = $(SRC:src/%.c=build/%.o) $(PROTO_C:.c=.o)
 
 TRANSPORT = ../transport/target/release/liblzc_mesh_transport.a
@@ -38,20 +39,22 @@ build:
 # Portable archive: binary + desktop entry + icon + install.sh
 dist: build/lzc-mesh
 	rm -rf build/dist && mkdir -p build/dist/lzc-mesh ../dist
-	cp build/lzc-mesh lzc-mesh.desktop lzc-mesh.png install.sh host-bluetooth.py BLUETOOTH.md ../../LICENSE build/dist/lzc-mesh/
-	tar -C build/dist -czf ../dist/lzc-mesh-linux-x86_64.tar.gz lzc-mesh
+	cp build/lzc-mesh lzc-mesh.desktop lzc-mesh.png install.sh host-bluetooth.py BLUETOOTH.md HCLIENT-CLI.md ../../LICENSE build/dist/lzc-mesh/
+	tar -C build/dist -czf ../dist/lzc-mesh-linux-$(ARCH).tar.gz lzc-mesh
 
 # Installer: Arch Linux package (pacman -U), built with makepkg from this tree
 pkg:
 	rm -rf build/pkg && mkdir -p build/pkg/src/linux ../dist
-	cp -r Makefile src protocols lzc-mesh.desktop lzc-mesh.png host-bluetooth.py BLUETOOTH.md build/pkg/src/linux/
+	cp -r Makefile src protocols lzc-mesh.desktop lzc-mesh.png host-bluetooth.py BLUETOOTH.md HCLIENT-CLI.md build/pkg/src/linux/
 	mkdir -p build/pkg/src/transport
 	cp -r ../transport/Cargo.toml ../transport/Cargo.lock ../transport/include.h ../transport/input_gate.h ../transport/src build/pkg/src/transport/
 	cp pkg/PKGBUILD build/pkg/
 	cp ../../LICENSE build/pkg/LICENSE
 	cd build/pkg && sed -i 's#install -Dm0644 ../../LICENSE#install -Dm0644 "$$startdir/LICENSE"#' PKGBUILD && \
 		SRCDEST=$$PWD PKGDEST=$$PWD/out makepkg -f --noextract --nodeps --noconfirm >makepkg.log 2>&1 || (tail -20 makepkg.log; exit 1)
-	cp build/pkg/out/lzc-mesh-$(VERSION)-1-x86_64.pkg.tar.zst ../dist/lzc-mesh-linux-x86_64.pkg.tar.zst
+	for package in build/pkg/out/lzc-mesh-$(VERSION)-1-$(ARCH).pkg.tar.*; do \
+		cp "$$package" "../dist/lzc-mesh-linux-$(ARCH).pkg$${package##*.pkg}"; \
+	done
 
 clean:
 	rm -rf build
