@@ -4,6 +4,7 @@
 #   ../dist/lzc-mesh-windows.zip        portable archive: exe + install.ps1
 set -eu
 cd "$(dirname "$0")"
+python3 ../../scripts/version.py
 mkdir -p build ../dist
 # Reuse the same authenticated transport and routing as the Mac / Linux clients.
 CC_x86_64_pc_windows_gnu="$PWD/zig-cc.sh" \

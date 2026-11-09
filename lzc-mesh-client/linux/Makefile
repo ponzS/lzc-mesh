@@ -3,7 +3,14 @@ CC ?= gcc
 PKGS = gtk4 libsoup-3.0 json-glib-1.0 wayland-client wayland-cursor xkbcommon cairo
 CFLAGS += -O2 -g -Wall -Wextra -Wno-unused-parameter -std=gnu11 $(shell pkg-config --cflags $(PKGS)) -Ibuild
 LDLIBS += $(shell pkg-config --libs $(PKGS)) -lm
-VERSION ?= 0.3.5
+ROOT := $(abspath ../..)
+# Run before dependency timestamps are inspected; changed .env updates Cargo too.
+VERSION_SCOPE ?= all
+VERSION_SYNC := $(shell python3 $(ROOT)/scripts/version.py --scope $(VERSION_SCOPE) >/dev/null && echo ok)
+ifneq ($(VERSION_SYNC),ok)
+$(error Failed to synchronize release metadata from $(ROOT)/.env)
+endif
+override VERSION := $(shell python3 $(ROOT)/scripts/version.py --print)
 ARCH ?= $(shell uname -m)
 CFLAGS += -DLZC_MESH_VERSION=\"$(VERSION)\"
 
@@ -27,7 +34,7 @@ build/%-client-protocol.h: protocols/%.xml | build
 	wayland-scanner client-header $< $@
 build/%-protocol.c: protocols/%.xml | build
 	wayland-scanner private-code $< $@
-build/%.o: src/%.c $(PROTO_H) src/*.h ../transport/include.h ../transport/input_gate.h | build
+build/%.o: src/%.c $(PROTO_H) src/*.h ../transport/include.h ../transport/input_gate.h $(ROOT)/.env | build
 	$(CC) $(CFLAGS) -c $< -o $@
 build/%-protocol.o: build/%-protocol.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -48,10 +55,15 @@ pkg:
 	cp -r Makefile src protocols lzc-mesh.desktop lzc-mesh.png host-bluetooth.py BLUETOOTH.md HCLIENT-CLI.md build/pkg/src/linux/
 	mkdir -p build/pkg/src/transport
 	cp -r ../transport/Cargo.toml ../transport/Cargo.lock ../transport/include.h ../transport/input_gate.h ../transport/src build/pkg/src/transport/
+	# Preserve repository-relative paths for the same version preflight in makepkg.
+	mkdir -p build/pkg/src/lzc-mesh-client build/pkg/src/scripts
+	mv build/pkg/src/linux build/pkg/src/lzc-mesh-client/linux
+	mv build/pkg/src/transport build/pkg/src/lzc-mesh-client/transport
+	cp $(ROOT)/.env build/pkg/src/.env
+	cp $(ROOT)/scripts/version.py build/pkg/src/scripts/
 	cp pkg/PKGBUILD build/pkg/
 	cp ../../LICENSE build/pkg/LICENSE
-	cd build/pkg && sed -i 's#install -Dm0644 ../../LICENSE#install -Dm0644 "$$startdir/LICENSE"#' PKGBUILD && \
-		SRCDEST=$$PWD PKGDEST=$$PWD/out makepkg -f --noextract --nodeps --noconfirm >makepkg.log 2>&1 || (tail -20 makepkg.log; exit 1)
+	cd build/pkg && SRCDEST=$$PWD PKGDEST=$$PWD/out makepkg -f --noextract --nodeps --noconfirm >makepkg.log 2>&1 || (tail -20 makepkg.log; exit 1)
 	for package in build/pkg/out/lzc-mesh-$(VERSION)-1-$(ARCH).pkg.tar.*; do \
 		cp "$$package" "../dist/lzc-mesh-linux-$(ARCH).pkg$${package##*.pkg}"; \
 	done

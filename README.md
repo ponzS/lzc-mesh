@@ -71,9 +71,23 @@ Windows 和 Linux 的安装都不需要管理员权限（Arch 包除外）。LPK
 
 ## 构建
 
+版本元数据统一在根目录 [`.env`](.env) 维护：`VERSION` 是全平台版本，
+`MACOS_BUILD` / `MACOS_HELPER_BUILD` 是 Mac 主程序与辅助程序的递增构建号。
+此文件只包含公开发布信息，不存放密码或令牌。升级版本时只修改这里，然后运行：
+
+```sh
+python3 scripts/version.py          # 同步 Cargo、客户端、安装包和网页下载链接
+python3 scripts/version.py --check  # 检查是否遗漏同步，适合 CI／发布前检查
+```
+
+构建需要 Python 3。下面的构建入口会自动同步；直接运行 `cargo` 前需先同步。
+工具要求的 Cargo／plist／Windows 资源等版本字段仍提交到仓库，但不再手工修改，
+Linux Makefile 与 PKGBUILD 直接读取 `.env`。LPK 用 `release.sh` 在打包工具读取元数据前同步；
+若直接使用 `lzc-cli project release`，先运行同步命令。历史变更记录中的版本号不随同步改写。
+
 ```sh
 # LPK（Linux x86_64，需要 Rust 的 x86_64-unknown-linux-musl target 和 lzc-cli）
-cd lzc-mesh-lpk && sh build.sh && lzc-cli project release
+sh lzc-mesh-lpk/release.sh
 
 # macOS（在 Mac 上，需要 Xcode 命令行工具和 Rust 的 aarch64/x86_64-apple-darwin target）
 cd lzc-mesh-client/macos && ./build.sh

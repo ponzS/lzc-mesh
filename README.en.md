@@ -63,9 +63,26 @@ Installing on Windows and Linux needs no administrator rights (except the Arch p
 
 ## Build
 
+Maintain release metadata in the root [`.env`](.env): `VERSION` is shared by all
+platforms, while `MACOS_BUILD` / `MACOS_HELPER_BUILD` are the monotonically increasing
+Mac app/helper build numbers. This tracked file contains public metadata only, never
+passwords or tokens. Change it and run:
+
+```sh
+python3 scripts/version.py          # Sync Cargo, client/package metadata and web links
+python3 scripts/version.py --check  # Fail on stale derived metadata; useful in CI
+```
+
+Python 3 is required. The build entry points below synchronize automatically; sync
+before invoking `cargo` directly. Tool-required Cargo/plist/Windows resource fields
+remain checked in but should not be edited manually. The Linux Makefile and PKGBUILD
+read `.env` directly. The LPK `release.sh` syncs before the packaging tool reads
+metadata; sync first if calling `lzc-cli project release` directly. Historical
+changelog versions are not rewritten.
+
 ```sh
 # LPK (Linux x86_64; needs Rust's x86_64-unknown-linux-musl target and lzc-cli)
-cd lzc-mesh-lpk && sh build.sh && lzc-cli project release
+sh lzc-mesh-lpk/release.sh
 
 # macOS (on a Mac with the Xcode command line tools)
 cd lzc-mesh-client/macos && ./build.sh

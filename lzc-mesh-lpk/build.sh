@@ -3,6 +3,7 @@
 # Client installers are not bundled; the layout page links to GitHub Releases.
 set -eu
 cd "$(dirname "$0")"
+python3 ../scripts/version.py
 if [ -z "${CC_x86_64_unknown_linux_musl:-}" ] && ! command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
   if command -v musl-gcc >/dev/null 2>&1; then
     export CC_x86_64_unknown_linux_musl=musl-gcc

@@ -1,7 +1,11 @@
 # Arch Linux package for the LZC Mesh client. Built from this source tree by
 # `make pkg` (the Makefile copies the sources into $srcdir).
 pkgname=lzc-mesh
-pkgver=0.3.5
+# make pkg stages the public root .env alongside the build sources.
+_version_root="${startdir:-$PWD}/src"
+[[ -f "$_version_root/.env" ]] || _version_root="${startdir:-$PWD}/../../.."
+pkgver=$(python3 "$_version_root/scripts/version.py" --print)
+unset _version_root
 pkgrel=1
 pkgdesc="懒猫设备接力: share one keyboard, mouse, clipboard and files across your computers over the LazyCat network"
 arch=('x86_64' 'aarch64')
@@ -9,18 +13,18 @@ url="https://github.com/ponzS/lzc-mesh"
 license=('LicenseRef-PolyForm-Noncommercial-1.0.0')
 depends=('gtk4>=4.10' 'libsoup3' 'json-glib' 'wayland' 'libxkbcommon' 'glib2')
 optdepends=('python: optional host Bluetooth descriptor bridge')
-makedepends=('wayland-protocols' 'pkgconf' 'rust')
+makedepends=('wayland-protocols' 'pkgconf' 'rust' 'python')
 # The Rust static library already uses ThinLTO; GCC LTO cannot re-link ring assembly.
 options=('!lto')
 source=()
 
 build() {
-  cd "$srcdir/linux"
-  make VERSION="$pkgver"
+  cd "$srcdir/lzc-mesh-client/linux"
+  make VERSION_SCOPE=linux
 }
 
 package() {
-  cd "$srcdir/linux"
+  cd "$srcdir/lzc-mesh-client/linux"
   install -Dm0755 build/lzc-mesh "$pkgdir/usr/bin/lzc-mesh"
   install -Dm0644 lzc-mesh.desktop "$pkgdir/usr/share/applications/lzc-mesh.desktop"
   install -Dm0644 lzc-mesh.desktop "$pkgdir/etc/xdg/autostart/lzc-mesh.desktop"
@@ -28,5 +32,5 @@ package() {
   install -Dm0755 host-bluetooth.py "$pkgdir/usr/share/lzc-mesh/host-bluetooth.py"
   install -Dm0644 BLUETOOTH.md "$pkgdir/usr/share/doc/lzc-mesh/BLUETOOTH.md"
   install -Dm0644 HCLIENT-CLI.md "$pkgdir/usr/share/doc/lzc-mesh/HCLIENT-CLI.md"
-  install -Dm0644 ../../LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

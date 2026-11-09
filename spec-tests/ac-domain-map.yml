@@ -1,6 +1,9 @@
 domains:
   connection:
     paths:
+      - .env
+      - scripts/version.py
+      - spec-tests/version-metadata.py
       - lzc-mesh-client/transport/**
       - lzc-mesh-client/macos/Sources/**
       - lzc-mesh-client/linux/src/**

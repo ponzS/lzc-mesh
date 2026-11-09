@@ -6,6 +6,7 @@
 # Accessibility / Input Monitoring grants across rebuilds; falls back to ad-hoc.
 set -eu
 cd "$(dirname "$0")"
+python3 ../../scripts/version.py
 rm -rf build && mkdir -p build
 export MACOSX_DEPLOYMENT_TARGET=12.0
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
