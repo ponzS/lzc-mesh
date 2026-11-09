@@ -100,6 +100,8 @@ Linux 客户端也支持通过已登录的 `hclient-cli` 获取微服信息和�
 
 ## 状态
 
+0.3.5 合入 [PR #4](https://github.com/ponzS/lzc-mesh/pull/4)，支持 Linux aarch64 原生构建、按架构及实际压缩格式打包，以及没有桌面版配置时通过已登录的 hclient-cli 获取微服与会话。加固 Linux 认证凭证发送，限制认证响应的读取大小，并修复延迟 accept 和 IPv4／IPv6 双栈服务的身份校验兼容性。安装包随 [v0.3.5 Release](https://github.com/ponzS/lzc-mesh/releases/tag/v0.3.5) 分发，Linux 附件仍为 x86_64，aarch64 可按[构建说明](spec-tests/linux-aarch64-build.md)原生构建；Linux 仍仅支持 Omarchy。详见 [CLI 接入说明](lzc-mesh-client/linux/HCLIENT-CLI.md)和[安全修复记录](spec-tests/linux-cli-security-review.md)。
+
 0.3.4 合入 [PR #1](https://github.com/ponzS/lzc-mesh/pull/1)，新增默认开启的“光标共享，自动居中”账号设置，Mac、Windows 和管理页面均可切换，Omarchy 通过共享核心生效（本地未增加开关）。开启时跨屏、第三屏交接及跨回源屏落在目标中央；关闭时保留原有共边比例入口。修正中枢转发和原生路径的累计坐标，避免下一次移动或点击回跳，保留 Windows 独立接收线程及既有位移、滚动和急停规则。安装包随 [v0.3.4 Release](https://github.com/ponzS/lzc-mesh/releases/tag/v0.3.4) 分发；协议、组件和构建验证不代表安装后的实体键鼠或蓝牙硬件验收，详见[集成验证](spec-tests/cursor-auto-center.md)。
 
 0.3.3 修复 Mac 远控操作 Windows 客户端自身标题栏时的偶发卡死：接收输入、鼠标松开、按键重复和接管释放不再等待主窗口消息循环，最小化跳过无效布局；关闭仍隐藏到托盘。生产输入组件在 Windows 实机上完成 18 次标题栏操作及断线释放验证，详见[修复记录](spec-tests/windows-caption-stall.md)。同时包含 0.3.2 的手机键盘触控板与沉浸模式，以及后续合入的边缘单指滚动、控制页自动开始和 iOS PWA 底部安全区调整，统一 LPK 和三端版本并更新下载链接；安装包随 [v0.3.3 Release](https://github.com/ponzS/lzc-mesh/releases/tag/v0.3.3) 分发，不代表已完成安装后 Mac→Windows 人工复测或蓝牙硬件验收。

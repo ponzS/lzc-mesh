@@ -14,7 +14,7 @@
 
 #include "json.h"
 
-#define LZC_MESH_VERSION "0.3.4"
+#define LZC_MESH_VERSION "0.3.5"
 
 enum Level { L_UNKNOWN, L_OK, L_WARN, L_ERROR };
 
