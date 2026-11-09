@@ -1,6 +1,6 @@
 #pragma once
-// Discovers the local LazyCat desktop client, its default box, the network
-// state and the session cookie used to reach the LZC Mesh LPK.
+// Discovers the local LazyCat desktop client or hclient-cli, the selected box,
+// network state and the session cookie used to reach the LZC Mesh LPK.
 void lzc_refresh(void);
 // Drops the cached cookie so the next refresh fetches a fresh one.
 void lzc_invalidate_cookie(void);

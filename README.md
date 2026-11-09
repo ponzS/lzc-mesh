@@ -86,6 +86,10 @@ cd lzc-mesh-client/linux && make && make dist   # tar.gz
 cd lzc-mesh-client/linux && make pkg            # Arch 包，需要 makepkg
 ```
 
+Linux 客户端支持在 `x86_64` 和 `aarch64` Omarchy 上原生构建，`make dist` 按本机架构命名压缩包，`make pkg` 保留 makepkg 配置的压缩格式。aarch64 的本地构建及验证记录见 [ARM Linux 构建记录](spec-tests/linux-aarch64-build.md)；上面的下载表仍对应上游已发布的安装包。
+
+Linux 客户端也支持通过已登录的 `hclient-cli` 获取微服信息和登录会话，没有桌面版配置时自动启用。已验证 hclient-cli 1.5.1 的 TUN 环境，详见 [命令行客户端接入说明](lzc-mesh-client/linux/HCLIENT-CLI.md)。
+
 产物输出到 `lzc-mesh-lpk/dist/` 和 `lzc-mesh-client/dist/`。macOS 的 `build.sh` 同时生成 dmg 和 zip。
 
 ## 权限

@@ -1,33 +1,113 @@
-// LazyCat network status and sign-in credentials for the box, obtained from the
-// LazyCat client signed in on this computer. Requests to the box then travel over
-// the LazyCat network.
+// LazyCat network status and sign-in credentials from the local desktop client
+// or hclient-cli. Requests to the box then travel over the LazyCat network.
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
 
 #include "app.h"
 #include "lzc.h"
+#include "lzc_cli.h"
 #include "net.h"
 
 static SoupSession *session;
+static SoupSession *local_session;
 static bool refreshing;
 static gint64 service_checked_at;
 
 static SoupSession *http(void) {
     if (!session) {
-        session = soup_session_new_with_options("timeout", 8, "user-agent", "lzc-mesh-linux/" LZC_MESH_VERSION, NULL);
-        // Never follow a login redirect silently; a 30x means the cookie is not accepted.
-        soup_session_remove_feature_by_type(session, SOUP_TYPE_COOKIE_JAR);
+        session = lzc_http_session_new(FALSE);
+        soup_session_set_user_agent(session, "lzc-mesh-linux/" LZC_MESH_VERSION);
     }
     return session;
+}
+
+static SoupSession *local_http(void) {
+    if (!local_session) {
+        local_session = lzc_http_session_new(TRUE);
+        soup_session_set_user_agent(local_session, "lzc-mesh-linux/" LZC_MESH_VERSION);
+    }
+    return local_session;
 }
 
 typedef struct {
     int port;
     char *token;
+    char *base;
+    bool cli;
+    LzcLocalPeer *peer;
 } LocalApi;
+
+static bool read_cli_api(LocalApi *out, char **error) {
+    char *dir = g_build_filename(g_get_home_dir(), ".config", "hportal-client", NULL);
+    char *path = g_build_filename(dir, "hclient-cli-daemon.json", NULL);
+    char *credential_path = g_build_filename(dir, "shellapi_cred", NULL);
+    JsonParser *parser = json_parser_new();
+    GError *io_error = NULL;
+    char *contents = lzc_read_private_file(path, 64 * 1024, &io_error);
+    bool ok = false;
+    if (!contents || !json_parser_load_from_data(parser, contents, -1, NULL) ||
+        !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+        *error = g_strdup(io_error ? io_error->message : "hclient-cli 运行配置无效，请启动并登录懒猫客户端");
+        goto out;
+    }
+    JsonObject *object = json_node_get_object(json_parser_get_root(parser));
+    JsonNode *pid_node = json_object_get_member(object, "pid");
+    gint64 pid = pid_node && json_node_get_value_type(pid_node) == G_TYPE_INT64 ?
+                 json_node_get_int(pid_node) : 0;
+    if (pid <= 1 || pid > G_MAXINT || !(out->peer = lzc_local_peer_new(pid, "hclient-cli", &io_error))) {
+        *error = g_strdup(io_error ? io_error->message : "hclient-cli 运行配置缺少有效的 PID");
+        goto out;
+    }
+    JsonNode *address_node = json_object_get_member(object, "shellapi_address");
+    const char *address = address_node && json_node_get_value_type(address_node) == G_TYPE_STRING ?
+                          json_node_get_string(address_node) : NULL;
+    GSocketConnectable *endpoint = address ? g_network_address_parse(address, 0, NULL) : NULL;
+    if (!endpoint) {
+        *error = g_strdup("hclient-cli 缺少有效的 shellapi_address，请重启命令行客户端");
+        goto out;
+    }
+    const char *host = g_network_address_get_hostname(G_NETWORK_ADDRESS(endpoint));
+    guint16 port = g_network_address_get_port(G_NETWORK_ADDRESS(endpoint));
+    GInetAddress *ip = g_inet_address_new_from_string(host);
+    bool loopback = ip && g_inet_address_get_is_loopback(ip) && port;
+    g_clear_object(&ip);
+    if (loopback) {
+        out->base = g_strdup_printf(strchr(host, ':') ? "http://[%s]:%u" : "http://%s:%u", host, port);
+        out->port = port;
+    }
+    g_object_unref(endpoint);
+    if (!loopback) {
+        *error = g_strdup("hclient-cli 的凭证接口必须使用本机回环地址");
+        goto out;
+    }
+    out->token = lzc_read_private_file(credential_path, 1024, &io_error);
+    if (!out->token) {
+        *error = g_strdup(io_error ? io_error->message : "无法读取 hclient-cli 本机接口凭证");
+        goto out;
+    }
+    g_strstrip(out->token);
+    if (!*out->token || strlen(out->token) > 1024 || strpbrk(out->token, "\r\n")) {
+        *error = g_strdup("hclient-cli 本机接口凭证无效");
+        goto out;
+    }
+    out->cli = true;
+    ok = true;
+out:
+    if (!ok) { g_clear_pointer(&out->token, g_free); g_clear_pointer(&out->base, g_free); }
+    if (!ok) { lzc_local_peer_free(out->peer); out->peer = NULL; }
+    g_clear_error(&io_error);
+    g_free(contents);
+    g_object_unref(parser);
+    g_free(dir); g_free(path); g_free(credential_path);
+    return ok;
+}
 
 static bool read_local_api(LocalApi *out, char **error) {
     char *path = g_build_filename(g_get_home_dir(), ".config", "lzc-client-desktop", "core.cfg", NULL);
+    if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+        g_free(path);
+        return read_cli_api(out, error);
+    }
     JsonParser *p = json_parser_new();
     bool ok = false;
     if (!json_parser_load_from_file(p, path, NULL)) {
@@ -51,9 +131,10 @@ static JsonNode *get_json(const char *url, const char *header, const char *value
         *error = g_strdup("无效地址");
         return NULL;
     }
-    if (header) soup_message_headers_append(soup_message_get_request_headers(msg), header, value);
     GError *err = NULL;
-    GBytes *body = soup_session_send_and_read(http(), msg, NULL, &err);
+    SoupSession *transport = !g_strcmp0(g_uri_get_scheme(soup_message_get_uri(msg)), "http") ?
+                             local_http() : http();
+    GBytes *body = lzc_http_send_authenticated(transport, msg, NULL, header, value, &err);
     JsonNode *node = NULL;
     guint code = soup_message_get_status(msg);
     if (!body) {
@@ -114,17 +195,20 @@ static void probe_thread(GTask *task, gpointer src, gpointer data, GCancellable 
         p->client_text = error;
         return;
     }
-    char *base = g_strdup_printf("http://127.0.0.1:%d", api.port);
+    char *base = api.cli ? g_strdup(api.base) : g_strdup_printf("http://127.0.0.1:%d", api.port);
     char *url = g_strdup_printf("%s/default-box", base);
-    JsonNode *box = get_json(url, "LZC_MISC_AUTH_TOKEN", api.token, &error);
+    JsonNode *box = api.cli ? lzc_cli_default_box(local_http(), api.peer, base, api.token, p->override, &error) :
+                             get_json(url, "LZC_MISC_AUTH_TOKEN", api.token, &error);
     g_free(url);
     if (!box || !JSON_NODE_HOLDS_OBJECT(box)) {
         p->client_level = ST_ERROR;
-        p->client_text = g_strdup_printf("懒猫微服客户端未运行（本地接口 127.0.0.1:%d 不可达：%s）", api.port, error ? error : "无数据");
+        p->client_text = g_strdup_printf("%s 本地接口不可用（%s：%s）", api.cli ? "hclient-cli" : "懒猫桌面客户端",
+                                        base, error ? error : "无数据");
+        if (box) json_node_unref(box);
         goto out;
     }
     p->client_level = ST_OK;
-    p->client_text = g_strdup_printf("运行中（本地接口 127.0.0.1:%d）", api.port);
+    p->client_text = g_strdup_printf("%s 运行中（%s）", api.cli ? "hclient-cli" : "懒猫桌面客户端", base);
     JsonObject *o = json_node_get_object(box);
     p->box_name = g_strdup(json_object_get_string_member_with_default(o, "boxName", ""));
     p->box_domain = g_strdup(json_object_get_string_member_with_default(o, "boxDomain", ""));
@@ -149,28 +233,33 @@ static void probe_thread(GTask *task, gpointer src, gpointer data, GCancellable 
     p->net_level = status == 2 ? ST_OK : status == 1 || status == 4 ? ST_WARN : ST_ERROR;
     g_free(p->net_text);
     p->net_text = g_strdup_printf("%s · %s · 用户 %s%s", p->box_domain, box_status_text(status), *p->login_user ? p->login_user : "未登录",
-                                  use_override ? "" : "（懒猫客户端默认微服）");
+                                  use_override || (api.cli && *p->override) ? "" : "（懒猫客户端默认微服）");
     json_node_unref(box);
     if (status != 2) goto out;
 
-    char *esc = g_uri_escape_string(p->box_domain, NULL, FALSE);
-    url = g_strdup_printf("%s/box-ext-info?url=https%%3A%%2F%%2F%s%%2F", base, esc);
-    g_free(esc);
-    g_clear_pointer(&error, g_free);
-    JsonNode *ext = get_json(url, "LZC_MISC_AUTH_TOKEN", api.token, &error);
-    g_free(url);
-    if (ext && JSON_NODE_HOLDS_OBJECT(ext)) {
-        JsonObject *eo = json_node_get_object(ext);
-        JsonArray *cookies = json_object_has_member(eo, "cookies") ? json_object_get_array_member(eo, "cookies") : NULL;
-        for (guint i = 0; cookies && i < json_array_get_length(cookies); i++) {
-            JsonObject *ck = json_array_get_object_element(cookies, i);
-            if (g_strcmp0(json_object_get_string_member_with_default(ck, "name", ""), "Lzc-Auth-Token") == 0)
-                p->cookie = g_strdup(json_object_get_string_member_with_default(ck, "value", ""));
+    if (api.cli) {
+        g_clear_pointer(&error, g_free);
+        p->cookie = lzc_cli_auth_token(local_http(), api.peer, base, api.token, &error);
+    } else {
+        char *esc = g_uri_escape_string(p->box_domain, NULL, FALSE);
+        url = g_strdup_printf("%s/box-ext-info?url=https%%3A%%2F%%2F%s%%2F", base, esc);
+        g_free(esc);
+        g_clear_pointer(&error, g_free);
+        JsonNode *ext = get_json(url, "LZC_MISC_AUTH_TOKEN", api.token, &error);
+        g_free(url);
+        if (ext && JSON_NODE_HOLDS_OBJECT(ext)) {
+            JsonObject *eo = json_node_get_object(ext);
+            JsonArray *cookies = json_object_has_member(eo, "cookies") ? json_object_get_array_member(eo, "cookies") : NULL;
+            for (guint i = 0; cookies && i < json_array_get_length(cookies); i++) {
+                JsonObject *ck = json_array_get_object_element(cookies, i);
+                if (g_strcmp0(json_object_get_string_member_with_default(ck, "name", ""), "Lzc-Auth-Token") == 0)
+                    p->cookie = g_strdup(json_object_get_string_member_with_default(ck, "value", ""));
+            }
         }
+        if (ext) json_node_unref(ext);
     }
-    if (ext) json_node_unref(ext);
     g_free(p->login_text);
-    if (p->cookie && *p->cookie && use_override) {
+    if (p->cookie && *p->cookie && (use_override || api.cli)) {
         // Verify the network path and the session in one request.
         char *who = g_strdup_printf("https://%s/sys/whoami", p->box_domain);
         char *ck = g_strdup_printf("Lzc-Auth-Token=%s", p->cookie);
@@ -182,7 +271,8 @@ static void probe_thread(GTask *task, gpointer src, gpointer data, GCancellable 
         if (w && JSON_NODE_HOLDS_OBJECT(w)) {
             g_free(p->login_user);
             p->login_user = g_strdup(json_object_get_string_member_with_default(json_node_get_object(w), "uid", ""));
-            p->net_text = g_strdup_printf("%s · 已连接 · 用户 %s（手动指定的微服）", p->box_domain, p->login_user);
+            p->net_text = g_strdup_printf("%s · 已连接 · 用户 %s（%s）", p->box_domain, p->login_user,
+                                         api.cli ? "hclient-cli" : "手动指定的微服");
         } else {
             p->net_level = ST_ERROR;
             p->net_text = g_strdup_printf("%s 不可达或会话无效（%s），请确认懒猫微服客户端已登录该微服", p->box_domain, error ? error : "?");
@@ -221,6 +311,8 @@ out:
     g_free(error);
     g_free(base);
     g_free(api.token);
+    g_free(api.base);
+    lzc_local_peer_free(api.peer);
 }
 
 static void probe_done(GObject *src, GAsyncResult *res, gpointer data) {

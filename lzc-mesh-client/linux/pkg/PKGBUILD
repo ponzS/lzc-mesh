@@ -4,7 +4,7 @@ pkgname=lzc-mesh
 pkgver=0.3.4
 pkgrel=1
 pkgdesc="懒猫设备接力: share one keyboard, mouse, clipboard and files across your computers over the LazyCat network"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/ponzS/lzc-mesh"
 license=('LicenseRef-PolyForm-Noncommercial-1.0.0')
 depends=('gtk4>=4.10' 'libsoup3' 'json-glib' 'wayland' 'libxkbcommon' 'glib2')
@@ -27,5 +27,6 @@ package() {
   install -Dm0644 lzc-mesh.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/lzc-mesh.png"
   install -Dm0755 host-bluetooth.py "$pkgdir/usr/share/lzc-mesh/host-bluetooth.py"
   install -Dm0644 BLUETOOTH.md "$pkgdir/usr/share/doc/lzc-mesh/BLUETOOTH.md"
+  install -Dm0644 HCLIENT-CLI.md "$pkgdir/usr/share/doc/lzc-mesh/HCLIENT-CLI.md"
   install -Dm0644 ../../LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
