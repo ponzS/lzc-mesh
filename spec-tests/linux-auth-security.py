@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Credential boundary tests. Uses loopback servers and disposable fake secrets."""
 import ctypes
+import gzip
 import http.server
 import json
 import os
 import pathlib
 import resource
 import shlex
+import socket
 import ssl
 import subprocess
 import tempfile
 import threading
+import time
 
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -65,20 +68,82 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_POST = handle_request
 
 
-def server(tls=None, ipv6=False):
-    handler = type("InstanceHandler", (Handler,), {"records": [], "status": 200, "location": None})
-    if ipv6:
-        import socket
-        cls = type("IPv6Server", (http.server.ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
-        service = cls(("::1", 0), handler)
-    else:
-        service = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+def server(tls=None, ipv6=False, dual_stack=False, accept_delay=0, handler_class=Handler):
+    handler = type("InstanceHandler", (handler_class,), {"records": [], "status": 200, "location": None})
+
+    class Service(http.server.ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ipv6 or dual_stack else socket.AF_INET
+
+        def server_bind(self):
+            if dual_stack:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+        def get_request(self):
+            if accept_delay:
+                time.sleep(accept_delay)
+            return super().get_request()
+
+    service = Service(("::" if dual_stack else "::1" if ipv6 else "127.0.0.1", 0), handler)
     if tls:
         service.socket = tls.wrap_socket(service.socket, server_side=True)
     thread = threading.Thread(target=service.serve_forever, daemon=True)
     thread.start()
     servers.append((service, thread))
     return service, handler
+
+
+class LargeBody(Handler):
+    """Paced body proves early stream cancellation, not just final rejection."""
+    chunked = False
+    length = 16 * 1024 * 1024
+    compressed = False
+    finished = threading.Event()
+    sent = 0
+
+    def do_GET(self):
+        self.send_response(200)
+        payload = gzip.compress(b"x" * self.length) if self.compressed else None
+        wire_length = len(payload) if payload is not None else self.length
+        if self.compressed:
+            self.send_header("Content-Encoding", "gzip")
+        if self.chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Content-Length", str(wire_length))
+        self.end_headers()
+        try:
+            for offset in range(0, wire_length, 16384):
+                data = payload[offset:offset+16384] if payload is not None else b"x" * min(16384, wire_length - offset)
+                if self.chunked:
+                    self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                else:
+                    self.wfile.write(data)
+                self.wfile.flush()
+                type(self).sent += len(data)
+                time.sleep(.002)
+            if self.chunked:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            pass
+        finally:
+            self.finished.set()
+
+
+def body_case(name, chunked, tls=None, env=None, length=16 * 1024 * 1024, compressed=False):
+    kind = type("BodyFixture", (LargeBody,), {
+        "chunked": chunked, "length": length, "compressed": compressed,
+        "finished": threading.Event(), "sent": 0,
+    })
+    service, handler = server(tls=tls, handler_class=kind)
+    mode = "body-ok" if length == 1024 * 1024 else "body-limit"
+    run(name, mode, f"{'https' if tls else 'http'}://127.0.0.1:{service.server_port}", env=env)
+    assert handler.finished.wait(5), name
+    if mode == "body-limit" and not compressed:
+        # Allow socket buffering, but not reading/draining the complete response.
+        assert handler.sent < length // 2, (name, handler.sent, length)
+    print(f"  response fixture sent {handler.sent} bytes for {length} decoded bytes", flush=True)
 
 
 def run(name, mode, target, expect="ok", env=None):
@@ -119,6 +184,41 @@ try:
             run("IPv6 server-side connection ownership", "rpc", f"http://[::1]:{six.server_port}")
             assert six_handler.records
 
+        slow, slow_handler = server(accept_delay=.5)
+        run("desktop authentication tolerates delayed accept without leaking early", "desktop",
+            f"http://127.0.0.1:{slow.server_port}")
+        run("CLI authentication tolerates delayed accept", "rpc",
+            f"http://127.0.0.1:{slow.server_port}")
+        assert len(slow_handler.records) == 2
+        # No accepted socket means no provable owner. Stop within the Session
+        # budget and confirm that not even a request header was queued to it.
+        with socket.socket() as pending:
+            pending.bind(("127.0.0.1", 0)); pending.listen()
+            start = time.monotonic()
+            run("unaccepted socket has bounded wait and sends zero headers", "unaccepted",
+                f"http://127.0.0.1:{pending.getsockname()[1]}")
+            assert .8 <= time.monotonic() - start < 3
+            pending.settimeout(2)
+            accepted, _ = pending.accept()
+            with accepted:
+                accepted.settimeout(2)
+                assert accepted.recv(1) == b""
+        try:
+            dual, dual_handler = server(dual_stack=True)
+        except OSError:
+            print("SKIP: dual-stack IPv6 listener unavailable")
+        else:
+            run("IPv4 client authenticates dual-stack IPv6 server", "rpc",
+                f"http://127.0.0.1:{dual.server_port}")
+            assert dual_handler.records
+        body_case("Content-Length over limit cancels before full body", False)
+        body_case("chunked body over limit cancels before full body", True)
+        body_case("Content-Length exactly 1 MiB accepted", False, length=1024 * 1024)
+        body_case("chunked exactly 1 MiB accepted", True, length=1024 * 1024)
+        body_case("decoded gzip body over limit rejected", False, compressed=True)
+        body_case("chunked decoded gzip over limit rejected", True, compressed=True)
+        body_case("gzip exactly 1 MiB accepted", False, length=1024 * 1024, compressed=True)
+
         # Verify HTTPS with a fixture trust root, rather than disabling TLS validation.
         key, cert = tmp / "key.pem", tmp / "cert.pem"
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -133,6 +233,8 @@ try:
         secure_env = {k: v for k, v in os.environ.items() if "proxy" not in k.lower()}
         secure_env["LZC_FIXTURE_CA"] = str(cert)
         run("HTTPS authentication still works with verified certificates", "get", secure_url, env=secure_env)
+        body_case("HTTPS chunked body is bounded too", True, tls, secure_env)
+        body_case("HTTPS exactly 1 MiB accepted", True, tls, secure_env, length=1024 * 1024)
         for code in (302, 307, 308):
             hh.status, hh.location = code, f"https://localhost:{secure_dest.server_port}/leak"
             run(f"HTTPS Cookie rejects {code} cross-host redirect", "get", secure_url, "error", secure_env)

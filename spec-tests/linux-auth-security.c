@@ -13,8 +13,9 @@ int main(int argc, char **argv) {
     char *error = NULL;
     GError *io_error = NULL;
     gboolean ok = FALSE;
-    if (!strcmp(argv[1], "foreign")) {
+    if (!strcmp(argv[1], "foreign") || !strcmp(argv[1], "unaccepted")) {
         SoupSession *transport = lzc_http_session_new(TRUE);
+        if (!strcmp(argv[1], "unaccepted")) soup_session_set_timeout(transport, 1);
         SoupMessage *message = soup_message_new("POST", argv[2]);
         guint written = 0;
         g_signal_connect(message, "wrote-headers", G_CALLBACK(wrote_headers), &written);
@@ -23,6 +24,29 @@ int main(int argc, char **argv) {
         g_assert_null(body);
         g_assert_error(io_error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED);
         g_assert_cmpuint(written, ==, 0);
+        g_object_unref(message); g_object_unref(transport);
+        ok = TRUE;
+    } else if (!strcmp(argv[1], "body-ok") || !strcmp(argv[1], "body-limit")) {
+        SoupSession *transport = lzc_http_session_new(FALSE);
+        const char *ca = g_getenv("LZC_FIXTURE_CA");
+        if (ca) {
+            GTlsDatabase *database = g_tls_file_database_new(ca, &io_error);
+            g_assert_no_error(io_error);
+            soup_session_set_tls_database(transport, database);
+            g_object_unref(database);
+        }
+        SoupMessage *message = soup_message_new("GET", argv[2]);
+        GBytes *body = lzc_http_send_authenticated(transport, message, NULL, "Cookie",
+                                                  "fixture-credential", &io_error);
+        if (!strcmp(argv[1], "body-limit")) {
+            g_assert_null(body);
+            g_assert_error(io_error, G_IO_ERROR, G_IO_ERROR_MESSAGE_TOO_LARGE);
+        } else {
+            g_assert_no_error(io_error);
+            g_assert_nonnull(body);
+            g_assert_cmpuint(g_bytes_get_size(body), ==, 1024 * 1024);
+        }
+        g_clear_pointer(&body, g_bytes_unref);
         g_object_unref(message); g_object_unref(transport);
         ok = TRUE;
     } else if (!strcmp(argv[1], "file")) {

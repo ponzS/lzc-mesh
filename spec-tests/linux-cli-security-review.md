@@ -5,9 +5,54 @@
 范围：本次 ARM 打包改动、Linux hclient-cli 认证适配，以及适配所调用的
 原有 HTTP 认证流程。下文保留初次审查结果，当前修复状态见下一节。
 
-## 修复状态（2026-11-09）
+## 合并后定向修复（2026-11-09）
 
-已完成下文第 1、2、3 项加固：
+贡献者原提交 `3e4907aa2816ec99b6919adb52c1932ac0a29257` 通过普通 merge
+`e963d8756109dcc69ae0792ecf24f3a4460e901c` 保留；后续补丁不改写原作者历史。
+本节是本地独立复测，后文原始审查及 ARM 验证作为历史记录保留。
+
+### 三项修正
+
+1. **响应读取上限**：Linux 认证 HTTP 帮助函数改用流式读取，Content-Length
+   超限可提前拒绝；未知长度、chunked 和解压后的数据最多累计 1 MiB，
+   只多读一个字节检测超限，随即取消并关闭流。本地 CLI RPC、桌面版认证
+   及 HTTPS JSON 探测均生效，独立的文件下载流不受此上限影响。
+2. **延迟 accept**：保留发送凭证前的 UID 检查，在 Session 的连接等待预算内
+   等待服务 accept，替换固定 40 次／约 200 毫秒的等待；生产 Session 为
+   8 秒。仍无法验证或 CLI 退出时失败关闭，不允许先发请求再校验。
+3. **双栈连接**：IPv4 连接在 tcp 表中找不到服务端套接字时，继续按精确
+   IPv4-mapped IPv6 端点在 tcp6 表中核对 UID。没有使用仅匹配端口、跳过
+   UID 或只验证监听快照的兼容性捷径。
+
+### 本地验证结果（x86_64 Omarchy）
+
+- 旧代码／新代码同一实际 HTTP 帮助函数对照：500 ms 后 accept 与 IPv4→双栈
+  监听，旧代码均拒绝、新代码均成功；16 MiB chunked 响应旧代码完整读入，
+  新代码约读到 1 MiB 即中止（本次服务端实际写出 1,064,960 字节）。
+- `python3 spec-tests/linux-cli.py`：34/34，通过原有 gRPC-Web／protobuf 回归。
+- `LZC_FOREIGN_URL=http://127.0.0.54:53/ python3 spec-tests/linux-auth-security.py`：
+  49/49，包含 35 项既有默认测试、13 项新回归和 1 项可选跨 UID 检查。
+  外部 UID 使用本机既有的 systemd-resolved TCP 服务，只建连，验证 HTTP
+  请求头写出为 0；不修改该服务、不发送真实凭证。
+- 新测试覆盖半秒延迟 accept（桌面和 CLI）、未 accept 时 1 秒预算内停止且
+  零 HTTP 字节、双栈、Content-Length／chunked 提前取消、恰好 1 MiB、gzip
+  解压后超限及 HTTPS。16 MiB 原始响应被提前断开，不以最终拒绝代替读取上限。
+- 相同 49 项在 ASan、UBSan、LeakSanitizer 下通过，无报错；启用
+  `LZC_TEST_SANITIZERS=1 ASAN_OPTIONS=detect_leaks=1:abort_on_error=1`
+  和 `UBSAN_OPTIONS=halt_on_error=1`。
+- Linux `make -B -j3` 完整重编译／链接及 `make dist pkg` 通过，无编译告警；
+  检查 x86_64 ELF、Arch 包元数据、归档、CLI 文档与许可证。
+- 既有 Linux 输入 JSON 序列化、本机输入监视器（主循环心跳、过期扫描、
+  热插拔、FD 平衡）及会话 gate／活动分类回归均通过。
+
+本补丁只改 Linux 认证实现、测试和说明，不改共享 Rust 核心、Hub、Mac、
+Windows、Web、根目录工具链配置或 REQ/AC 产品合同。没有进行安装、重启、
+真实账号登录或跨设备输入操作；没有把本地测试算作 ARM 实机、Mac↔Linux、
+六方向实体键鼠或蓝牙硬件验收。不运行三端全量矩阵。
+
+## 原 PR 修复状态（2026-11-09）
+
+原 PR 已完成下文第 1、2、3 项加固：
 
 1. 本地认证使用独立 Session，并在发送函数中再次显式禁用代理。
    不依赖环境里的 `no_proxy`，也不信任调用方原有的代理设置。
@@ -26,7 +71,7 @@
 若未来要抵御这些主体，需要 CLI 配合提供认证的 Unix 通道或其他可信
 服务端身份机制，不能仅靠客户端单方面增加进程名检查。
 
-第 4 项“完整读入后才检查响应大小”**本轮未修复**。
+原 PR 中第 4 项“完整读入后才检查响应大小”**未修复**；现已由上文的独立补丁解决。
 
 验证：34 项原 RPC 测试通过；新增 36 项安全测试通过，包含一个针对
 本机已有 root 监听服务的真实跨 UID 连接检查，确认写出的 HTTP 请求头为 0。
@@ -168,6 +213,6 @@ spec-tests/linux-auth-security.py
 `LZC_FOREIGN_URL` 时运行，参见
 [命令行客户端接入说明](../lzc-mesh-client/linux/HCLIENT-CLI.md)。
 
-上面的初次修复建议已落实第 1、2、3 项，第 4 项仍待处理。
+原 PR 落实第 1、2、3 项；合并后的独立补丁补齐第 4 项，并修正延迟 accept 和双栈兼容问题。
 本审查不构成对项目全部远控、蓝牙、
 文件传输或 Rust 依赖的完整安全审计。

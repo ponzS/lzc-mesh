@@ -12,6 +12,8 @@ char *lzc_read_private_file(const char *path, gsize limit, GError **error);
 SoupSession *lzc_http_session_new(gboolean local);
 // Local HTTP never uses proxies. Credentials are attached only after checking
 // the connected peer's kernel UID. All authenticated requests reject redirects.
+// Authentication/probe bodies (including decompressed data) are streamed with
+// a 1 MiB cap; this helper is not used for shared-file downloads.
 GBytes *lzc_http_send_authenticated(SoupSession *session, SoupMessage *message,
                                     LzcLocalPeer *peer, const char *header,
                                     const char *credential, GError **error);

@@ -97,10 +97,18 @@ static gboolean loopback(GUri *uri) {
 }
 
 // /proc/net/tcp{,6} prints address words in native byte order, then a hex port.
-static char *tcp_address(GInetSocketAddress *address) {
+static char *tcp_address(GInetSocketAddress *address, gboolean mapped) {
     GInetAddress *ip = g_inet_socket_address_get_address(address);
     const guint8 *bytes = g_inet_address_to_bytes(ip);
     GString *text = g_string_new(NULL);
+    if (mapped) {
+        const guint8 prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255};
+        for (gsize offset = 0; offset < sizeof prefix; offset += 4) {
+            guint32 word;
+            memcpy(&word, prefix + offset, 4);
+            g_string_append_printf(text, "%08X", word);
+        }
+    }
     for (gsize offset = 0; offset < g_inet_address_get_native_size(ip); offset += 4) {
         guint32 word;
         memcpy(&word, bytes + offset, 4);
@@ -110,19 +118,11 @@ static char *tcp_address(GInetSocketAddress *address) {
     return g_string_free(text, FALSE);
 }
 
-// Check the SERVER half of this exact established TCP connection, rather than
-// a listener snapshot before connect. Its identity cannot change on port reuse.
-static int connection_uid(GSocketConnection *connection) {
-    GSocketAddress *local = g_socket_connection_get_local_address(connection, NULL);
-    GSocketAddress *remote = g_socket_connection_get_remote_address(connection, NULL);
+static int table_uid(const char *path, GInetSocketAddress *remote,
+                     GInetSocketAddress *local, gboolean mapped) {
     int result = -1;
-    if (!G_IS_INET_SOCKET_ADDRESS(local) || !G_IS_INET_SOCKET_ADDRESS(remote)) goto out;
-    GInetAddress *server_ip = g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(remote));
-    if (!g_inet_address_get_is_loopback(server_ip)) goto out;
-    char *server = tcp_address(G_INET_SOCKET_ADDRESS(remote));
-    char *client = tcp_address(G_INET_SOCKET_ADDRESS(local));
-    const char *path = g_inet_address_get_family(server_ip) == G_SOCKET_FAMILY_IPV6 ?
-                       "/proc/self/net/tcp6" : "/proc/self/net/tcp";
+    char *server = tcp_address(remote, mapped);
+    char *client = tcp_address(local, mapped);
     FILE *table = fopen(path, "re");
     if (table) {
         char *line = NULL;
@@ -142,9 +142,68 @@ static int connection_uid(GSocketConnection *connection) {
         fclose(table);
     }
     g_free(server); g_free(client);
+    return result;
+}
+
+// Check the SERVER half of this exact established TCP connection, rather than
+// a listener snapshot before connect. Its identity cannot change on port reuse.
+static int connection_uid(GSocketConnection *connection) {
+    GSocketAddress *local = g_socket_connection_get_local_address(connection, NULL);
+    GSocketAddress *remote = g_socket_connection_get_remote_address(connection, NULL);
+    int result = -1;
+    if (!G_IS_INET_SOCKET_ADDRESS(local) || !G_IS_INET_SOCKET_ADDRESS(remote)) goto out;
+    GInetAddress *ip = g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(remote));
+    if (!g_inet_address_get_is_loopback(ip)) goto out;
+    gboolean ipv6 = g_inet_address_get_family(ip) == G_SOCKET_FAMILY_IPV6;
+    result = table_uid(ipv6 ? "/proc/self/net/tcp6" : "/proc/self/net/tcp",
+                       G_INET_SOCKET_ADDRESS(remote), G_INET_SOCKET_ADDRESS(local), FALSE);
+    if (result < 0 && !ipv6) {
+        // A dual-stack IPv6 listener accepts IPv4 clients as mapped addresses.
+        // Keep both endpoints and ports exact; only their representation changes.
+        result = table_uid("/proc/self/net/tcp6", G_INET_SOCKET_ADDRESS(remote),
+                           G_INET_SOCKET_ADDRESS(local), TRUE);
+    }
 out:
     g_clear_object(&local); g_clear_object(&remote);
     return result;
+}
+
+// Small authentication/probe responses only, not the file-transfer stream.
+#define AUTH_BODY_LIMIT (1024 * 1024)
+
+static GBytes *send_bounded(SoupSession *session, SoupMessage *message,
+                           GCancellable *cancel, GError **error) {
+    GInputStream *stream = soup_session_send(session, message, cancel, error);
+    if (!stream) return NULL;
+    GByteArray *bytes = g_byte_array_new();
+    GBytes *body = NULL;
+    if (soup_message_headers_get_content_length(soup_message_get_response_headers(message)) > AUTH_BODY_LIMIT)
+        goto too_large;
+    for (;;) {
+        guint8 chunk[16384];
+        // Read at most one extra byte to detect oversized unknown-length or
+        // decoded (e.g. gzip) bodies without accumulating the rest in memory.
+        gsize capacity = MIN(sizeof chunk, AUTH_BODY_LIMIT + 1 - bytes->len);
+        gssize count = g_input_stream_read(stream, chunk, capacity, cancel, error);
+        if (count < 0) goto out;
+        if (!count) break;
+        if ((gsize)count > AUTH_BODY_LIMIT - bytes->len) goto too_large;
+        g_byte_array_append(bytes, chunk, count);
+    }
+    body = g_byte_array_free_to_bytes(bytes);
+    bytes = NULL;
+    goto out;
+too_large:
+    g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_MESSAGE_TOO_LARGE,
+                        "认证接口响应超过 1 MiB，已停止读取");
+    g_cancellable_cancel(cancel);
+out:
+    // Closing an unread Soup stream discards this connection, rather than
+    // draining an unbounded body or reusing it for another credential request.
+    g_input_stream_close(stream, NULL, NULL);
+    g_object_unref(stream);
+    if (bytes) g_byte_array_unref(bytes);
+    return body;
 }
 
 typedef struct {
@@ -152,14 +211,17 @@ typedef struct {
     GCancellable *cancel;
     const char *header, *credential;
     gboolean verified;
+    gint64 deadline;
 } Gate;
 
 static void connected(SoupMessage *message, GSocketClientEvent event, GIOStream *stream, Gate *gate) {
     if (event == G_SOCKET_CLIENT_CONNECTING) gate->verified = FALSE;
     if (event != G_SOCKET_CLIENT_COMPLETE) return;
     if (G_IS_SOCKET_CONNECTION(stream)) {
-        // The peer's accepted socket may appear just after connect completes.
-        for (guint attempt = 0; attempt < 40 && peer_alive(gate->peer); attempt++) {
+        // A busy server may not accept immediately. Wait within the session's
+        // connection budget, without sending any HTTP bytes before verification.
+        while (peer_alive(gate->peer) && !g_cancellable_is_cancelled(gate->cancel) &&
+               g_get_monotonic_time() < gate->deadline) {
             int owned = connection_uid(G_SOCKET_CONNECTION(stream));
             if (owned >= 0) { gate->verified = owned == 1; break; }
             g_usleep(5000);
@@ -190,17 +252,22 @@ GBytes *lzc_http_send_authenticated(SoupSession *session, SoupMessage *message,
     soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
     if (!local) {
         soup_message_headers_replace(soup_message_get_request_headers(message), header, credential);
-        return soup_session_send_and_read(session, message, NULL, error);
+        GCancellable *cancel = g_cancellable_new();
+        GBytes *body = send_bounded(session, message, cancel, error);
+        g_object_unref(cancel);
+        return body;
     }
     // Even callers with a configured resolver cannot proxy local credentials.
     soup_session_set_proxy_resolver(session, NULL);
     soup_message_add_flags(message, SOUP_MESSAGE_NEW_CONNECTION);
     soup_message_set_force_http1(message, TRUE);
-    Gate gate = {.peer = peer, .cancel = g_cancellable_new(), .header = header, .credential = credential};
+    guint timeout = soup_session_get_timeout(session);
+    Gate gate = {.peer = peer, .cancel = g_cancellable_new(), .header = header, .credential = credential,
+                 .deadline = g_get_monotonic_time() + (gint64)(timeout ? timeout : 8) * G_USEC_PER_SEC};
     soup_message_headers_remove(soup_message_get_request_headers(message), header);
     gulong network = g_signal_connect(message, "network-event", G_CALLBACK(connected), &gate);
     gulong start = g_signal_connect(message, "starting", G_CALLBACK(starting), &gate);
-    GBytes *body = soup_session_send_and_read(session, message, gate.cancel, error);
+    GBytes *body = send_bounded(session, message, gate.cancel, error);
     g_signal_handler_disconnect(message, network);
     g_signal_handler_disconnect(message, start);
     if (!gate.verified || !peer_alive(peer)) {

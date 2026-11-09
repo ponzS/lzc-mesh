@@ -7,6 +7,10 @@ domains:
       - lzc-mesh-lpk/web/**
       - spec-tests/device-*.py
       - spec-tests/linux-local-input.c
+      - spec-tests/linux-cli.c
+      - spec-tests/linux-cli.py
+      - spec-tests/linux-auth-security.c
+      - spec-tests/linux-auth-security.py
       - spec-tests/windows-outbox.cpp
       - spec-tests/windows-receiver.cpp
       - spec-tests/windows-direct-receiver.cpp
