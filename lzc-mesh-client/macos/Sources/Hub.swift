@@ -8,6 +8,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
     private var pingTimer: Timer?
     private var closing = false
     private var identity: DeviceIdentity?
+    private var announcedScreen = (width: 0.0, height: 0.0)
     private var lastMoveLog = Date.distantPast
     private var inputGate = MeshInputGate()
     private var activeControlID = "", receiveControlID = "", blockedControlID = "", sourceControlID = ""
@@ -131,7 +132,14 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         t.send(.string(text)) { _ in }
     }
 
-    func sendHello() {
+    func updateScreen() {
+        let s = AppState.shared
+        guard s.hubConnected, s.authVerified,
+              s.screenW != announcedScreen.width || s.screenH != announcedScreen.height else { return }
+        sendHello()
+    }
+
+    private func sendHello() {
         let s = AppState.shared
         if identity == nil {
             do { identity = try DeviceIdentity() }
@@ -141,7 +149,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
         if !s.authVerified { s.set(.deviceTrust, .unknown, "等待批准 · 指纹 \(identity.fingerprint)") }
         send(["t": s.authVerified ? "hello" : "device_hello", "id": s.deviceID, "name": Host.current().localizedName ?? "Mac", "platform": "macos",
               "w": s.screenW, "h": s.screenH, "version": AppState.version, "public_key": identity.publicKey, "clipboard_image": true])
-        if s.authVerified && !s.sharingEnabled { send(["t": "sharing", "enabled": false]) }
+        announcedScreen = (s.screenW, s.screenH)
     }
 
     func setAutoCenter(_ on: Bool) {
@@ -194,6 +202,7 @@ final class Hub: NSObject, URLSessionWebSocketDelegate {
             s.updateControlStatus(); s.updateClipboardStatus()
             if !s.authVerified { direct.disconnected() }
             if s.authVerified && !s.sharingEnabled { sendRaw(["t": "sharing", "enabled": false]) }
+            updateScreen()
         case "welcome":
             clipboard.imageSupported = o["clipboard_image"] as? Bool ?? false
             if o["auth_version"] as? Int != 1 { s.set(.deviceTrust, .error, "需要支持设备凭证的新版中枢；共享保持停用") }

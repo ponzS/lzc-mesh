@@ -120,12 +120,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateScreen() {
         let b = MacInput.desktopBounds()
-        if b.width != state.screenW || b.height != state.screenH {
-            state.screenW = b.width
-            state.screenH = b.height
-            state.set(.screen, .ok, "\(Int(b.width))×\(Int(b.height))（\(NSScreen.screens.count) 个显示器，逻辑点）")
-            if state.hubConnected { hub.sendHello() }
+        let monitors = NSScreen.screens.count
+        guard monitors > 0, b.width.isFinite, b.height.isFinite, b.width > 0, b.height > 0 else {
+            state.set(.screen, .warn, "未检测到活动显示器")
+            return
         }
+        state.screenW = b.width
+        state.screenH = b.height
+        state.set(.screen, .ok, "\(Int(b.width))×\(Int(b.height))（\(monitors) 个显示器，逻辑点）")
+        hub.updateScreen()
     }
 
     func applyBox() {

@@ -5,7 +5,7 @@
 void net_connect(void);
 void net_disconnect(void);
 bool net_busy(void);
-void net_send_hello(void);
+void net_update_screen(void);
 void net_send_edge(const char *dir, double pos);
 void net_send_motion(double dx, double dy);
 void net_send_button(int button, bool down);

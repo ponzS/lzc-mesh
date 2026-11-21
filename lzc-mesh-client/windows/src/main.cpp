@@ -109,12 +109,6 @@ void updateClipboardStatus() {
     else setStatus(S_CLIPBOARD, L_UNKNOWN, L"已关闭（可在管理页面或托盘菜单中开启）");
 }
 
-void updateScreenStatus() {
-    input::refreshScreen();
-    setStatus(S_SCREEN, L_OK, fmt(L"%d×%d（%d 个显示器，缩放 %d%%，逻辑像素 %.0f×%.0f）", g.screenW, g.screenH, GetSystemMetrics(SM_CMONITORS),
-                                  (int)std::lround(g.dpiScale * 100), g.screenW / g.dpiScale, g.screenH / g.dpiScale));
-}
-
 void onInputMessage(const Json &o);
 
 void refreshClientActivity() {
@@ -145,13 +139,31 @@ void refreshClientActivity() {
     }
 }
 
-void sendHello() {
+double announcedScreenW = 0, announcedScreenH = 0;
+
+void sendHello(double width, double height) {
     if (!identity::init()) return;
-    wchar_t name[256];
+    wchar_t name[256] = L"";
     DWORD n = 256;
     GetComputerNameExW(ComputerNamePhysicalDnsHostname, name, &n);
     hubws::send(JsonOut().s("t", g.authVerified ? "hello" : "device_hello").s("id", g.deviceId).s("name", narrow(name)).s("platform", "windows")
-                    .s("public_key", identity::publicKey()).b("clipboard_image", true).n("w", g.screenW / g.dpiScale).n("h", g.screenH / g.dpiScale).s("version", LZC_MESH_VERSION).str());
+                    .s("public_key", identity::publicKey()).b("clipboard_image", true).n("w", width).n("h", height).s("version", LZC_MESH_VERSION).str());
+    announcedScreenW = width;
+    announcedScreenH = height;
+}
+
+void updateScreenStatus() {
+    input::refreshScreen();
+    const int monitors = GetSystemMetrics(SM_CMONITORS);
+    if (monitors <= 0 || g.screenW <= 0 || g.screenH <= 0) {
+        setStatus(S_SCREEN, L_WARN, L"未检测到活动显示器");
+        return;
+    }
+    const double width = g.screenW / g.dpiScale, height = g.screenH / g.dpiScale;
+    setStatus(S_SCREEN, L_OK, fmt(L"%d×%d（%d 个显示器，缩放 %d%%，逻辑像素 %.0f×%.0f）", g.screenW, g.screenH, monitors,
+                                 (int)std::lround(g.dpiScale * 100), width, height));
+    const bool resized = width != announcedScreenW || height != announcedScreenH;
+    if (g.hubConnected && (announcedScreenW == 0 || (g.authVerified && resized))) sendHello(width, height);
 }
 
 void startProbe() {
@@ -246,6 +258,7 @@ void onHubText(const std::string &text, uint64_t nativeGeneration = 0) {
         setStatus(S_TRUST,g.authVerified?L_OK:L_WARN,std::wstring(message)+L" · 指纹 "+widen(identity::fingerprint()));
         refreshClientActivity(); updateControlStatus(); updateClipboardStatus();
         if (g.authVerified && !g.sharingEnabled) hubws::send(JsonOut().s("t","sharing").b("enabled",false).str());
+        if (g.authVerified) updateScreenStatus();
     } else if (t == "welcome") {
         g.clipboardImage = o["clipboard_image"].boolean();
         if (o["auth_version"].num()!=1) setStatus(S_TRUST,L_ERROR,L"需要支持设备凭证的新版中枢；共享保持停用");
@@ -486,6 +499,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT *r = (RECT *)l;
         SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
         mainwin::onDpi(h);
+        updateScreenStatus();
         return 0;
     }
     case WM_SIZE:
@@ -521,7 +535,10 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!quitting) { ShowWindow(h, SW_HIDE); return 0; }
         break;
     case WM_TIMER:
-        if (w == ID_TIMER) startProbe();
+        if (w == ID_TIMER) {
+            updateScreenStatus();
+            startProbe();
+        }
         if (w == ID_FG_TIMER) checkForegroundIntegrity();
         return 0;
     case WM_SETTINGCHANGE:
@@ -529,7 +546,6 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_DISPLAYCHANGE:
         updateScreenStatus();
-        if (g.hubConnected) sendHello();
         return 0;
     case WM_APP_TRAY:
         switch (LOWORD(l)) {
@@ -606,11 +622,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g.hubConnected = true;
         g.clipboardImage = false;
         g.deviceReady = g.deviceTrusted = g.authVerified = false; g.fileToken.clear();
+        announcedScreenW = announcedScreenH = 0;
         refreshClientActivity();
         input::setHubConnected(true);
         setStatus(S_HUB, L_OK, L"已连接");
         logLine(L"已连接设备接力中枢");
-        sendHello();
+        updateScreenStatus();
         tray::refresh();
         return 0;
     case WM_APP_HUB_TEXT: {

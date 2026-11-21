@@ -42,6 +42,10 @@ static const char *dir_names[] = {"left", "right", "up", "down"};
 typedef struct Output Output;
 
 typedef struct {
+    int x, y, w, h;
+} OutputGeometry;
+
+typedef struct {
     struct wl_surface *surface;
     struct zwlr_layer_surface_v1 *layer;
     struct wl_buffer *buffer;
@@ -54,7 +58,7 @@ struct Output {
     struct wl_output *wl;
     struct zxdg_output_v1 *xdg;
     uint32_t name;
-    int x, y, w, h;
+    OutputGeometry geometry, pending;
     Surf *strips[4];
 };
 
@@ -86,6 +90,7 @@ static struct {
     struct xkb_state *xkb_state;
 
     GPtrArray *outputs;
+    bool outputs_changed;
     bool edges[4];
     Surf *capture;
     struct zwp_locked_pointer_v1 *lock;
@@ -120,29 +125,34 @@ static void flush(void) { if (W.display) wl_display_flush(W.display); }
 
 // ---------------------------------------------------------------- geometry
 
-static void bounds(int *x0, int *y0, int *x1, int *y1) {
+static guint bounds(int *x0, int *y0, int *x1, int *y1) {
     *x0 = *y0 = G_MAXINT;
     *x1 = *y1 = G_MININT;
+    guint count = 0;
     for (guint i = 0; i < W.outputs->len; i++) {
-        Output *o = g_ptr_array_index(W.outputs, i);
-        if (o->w <= 0) continue;
-        *x0 = MIN(*x0, o->x); *y0 = MIN(*y0, o->y);
-        *x1 = MAX(*x1, o->x + o->w); *y1 = MAX(*y1, o->y + o->h);
+        Output *output = g_ptr_array_index(W.outputs, i);
+        OutputGeometry geometry = output->geometry;
+        if (geometry.w <= 0 || geometry.h <= 0) continue;
+        count++;
+        *x0 = MIN(*x0, geometry.x); *y0 = MIN(*y0, geometry.y);
+        *x1 = MAX(*x1, geometry.x + geometry.w); *y1 = MAX(*y1, geometry.y + geometry.h);
     }
-    if (*x0 == G_MAXINT) *x0 = *y0 = *x1 = *y1 = 0;
+    if (!count) *x0 = *y0 = *x1 = *y1 = 0;
+    return count;
 }
 
 static void update_screen(void) {
     int x0, y0, x1, y1;
-    bounds(&x0, &y0, &x1, &y1);
-    int w = x1 - x0, h = y1 - y0;
-    if (w <= 0 || h <= 0) return;
-    if (w != app.screen_w || h != app.screen_h) {
-        app.screen_w = w;
-        app.screen_h = h;
-        app_set_status(S_SCREEN, ST_OK, "%d×%d（%u 个显示器，逻辑像素）", w, h, W.outputs->len);
-        if (app.hub_connected) net_send_hello();
+    guint count = bounds(&x0, &y0, &x1, &y1);
+    if (!count) {
+        app_set_status(S_SCREEN, ST_WARN, "未检测到活动显示器");
+        return;
     }
+    int w = x1 - x0, h = y1 - y0;
+    app.screen_w = w;
+    app.screen_h = h;
+    app_set_status(S_SCREEN, ST_OK, "%d×%d（%u 个显示器，逻辑像素）", w, h, count);
+    net_update_screen();
 }
 
 // ---------------------------------------------------------------- buffers & layer surfaces
@@ -230,9 +240,11 @@ static void sync_strips(void) {
     bounds(&x0, &y0, &x1, &y1);
     for (guint i = 0; i < W.outputs->len; i++) {
         Output *o = g_ptr_array_index(W.outputs, i);
-        bool outer[4] = {o->x == x0, o->x + o->w == x1, o->y == y0, o->y + o->h == y1};
+        OutputGeometry geometry = o->geometry;
+        bool outer[4] = {geometry.x == x0, geometry.x + geometry.w == x1,
+                         geometry.y == y0, geometry.y + geometry.h == y1};
         for (int d = 0; d < 4; d++) {
-            bool want = W.edges[d] && outer[d] && o->w > 0 && !app.captured;
+            bool want = W.edges[d] && outer[d] && geometry.w > 0 && geometry.h > 0 && !app.captured;
             if (want && !o->strips[d]) o->strips[d] = surf_new(o, d);
             if (!want && o->strips[d]) {
                 surf_destroy(o->strips[d]);
@@ -245,9 +257,38 @@ static void sync_strips(void) {
 
 // ---------------------------------------------------------------- outputs
 
-static void xdg_pos(void *d, struct zxdg_output_v1 *x, int32_t px, int32_t py) { Output *o = d; o->x = px; o->y = py; }
-static void xdg_size(void *d, struct zxdg_output_v1 *x, int32_t w, int32_t h) { Output *o = d; o->w = w; o->h = h; }
-static void xdg_done(void *d, struct zxdg_output_v1 *x) { update_screen(); sync_strips(); }
+static void refresh_outputs(void) {
+    if (!W.outputs_changed) return;
+    W.outputs_changed = false;
+    update_screen();
+    sync_strips();
+}
+
+static void commit_output(Output *output) {
+    output->geometry = output->pending;
+    W.outputs_changed = true;
+}
+
+static void output_geometry(void *data, struct wl_output *output, int32_t x, int32_t y, int32_t width, int32_t height,
+                            int32_t subpixel, const char *make, const char *model, int32_t transform) {}
+static void output_mode(void *data, struct wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {}
+static void output_scale(void *data, struct wl_output *output, int32_t scale) {}
+static void output_done(void *data, struct wl_output *output) {
+    Output *state = data;
+    if (state->xdg && zxdg_output_v1_get_version(state->xdg) >= 3) commit_output(state);
+}
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode,
+    .done = output_done,
+    .scale = output_scale,
+};
+
+static void xdg_pos(void *d, struct zxdg_output_v1 *x, int32_t px, int32_t py) { Output *o = d; o->pending.x = px; o->pending.y = py; }
+static void xdg_size(void *d, struct zxdg_output_v1 *x, int32_t w, int32_t h) { Output *o = d; o->pending.w = w; o->pending.h = h; }
+static void xdg_done(void *d, struct zxdg_output_v1 *x) {
+    if (zxdg_output_v1_get_version(x) < 3) commit_output(d);
+}
 static void xdg_name(void *d, struct zxdg_output_v1 *x, const char *n) {}
 static void xdg_desc(void *d, struct zxdg_output_v1 *x, const char *n) {}
 static const struct zxdg_output_v1_listener xdg_output_listener = {xdg_pos, xdg_size, xdg_done, xdg_name, xdg_desc};
@@ -287,7 +328,7 @@ static void maybe_edge(void) {
     W.last_edge_output = s->output;
     int x0, y0, x1, y1;
     bounds(&x0, &y0, &x1, &y1);
-    double gx = s->output->x + W.px, gy = s->output->y + W.py;
+    double gx = s->output->geometry.x + W.px, gy = s->output->geometry.y + W.py;
     double pos = (s->dir == D_LEFT || s->dir == D_RIGHT) ? (gy - y0) / MAX(1, y1 - y0) : (gx - x0) / MAX(1, x1 - x0);
     net_send_edge(dir_names[s->dir], CLAMP(pos, 0.0, 1.0));
 }
@@ -420,6 +461,7 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
         Output *o = g_new0(Output, 1);
         o->name = name;
         o->wl = wl_registry_bind(r, name, &wl_output_interface, MIN(version, 3));
+        wl_output_add_listener(o->wl, &output_listener, o);
         g_ptr_array_add(W.outputs, o);
         output_watch(o);
     }
@@ -435,11 +477,11 @@ static void reg_remove(void *d, struct wl_registry *r, uint32_t name) {
         if (W.capture && W.capture->output == o) W.capture->output = NULL;
         if (W.last_edge_output == o) W.last_edge_output = NULL;
         if (o->xdg) zxdg_output_v1_destroy(o->xdg);
-        wl_output_destroy(o->wl);
+        if (wl_output_get_version(o->wl) >= WL_OUTPUT_RELEASE_SINCE_VERSION) wl_output_release(o->wl);
+        else wl_output_destroy(o->wl);
         g_ptr_array_remove_index(W.outputs, i);
         g_free(o);
-        update_screen();
-        sync_strips();
+        W.outputs_changed = true;
         return;
     }
 }
@@ -451,6 +493,7 @@ static gboolean on_wayland(gint fd, GIOCondition cond, gpointer d) {
         W.watch = 0;
         return G_SOURCE_REMOVE;
     }
+    refresh_outputs();
     flush();
     return G_SOURCE_CONTINUE;
 }
@@ -480,6 +523,7 @@ static bool setup_virtual_keyboard(void) {
 
 void wl_input_init(void) {
     W.outputs = g_ptr_array_new();
+    W.outputs_changed = true;
     W.held_keys = g_hash_table_new(NULL, NULL);
     W.held_buttons = g_hash_table_new(NULL, NULL);
     W.display = wl_display_connect(NULL);
@@ -511,7 +555,7 @@ void wl_input_init(void) {
         app_set_status(S_INPUT, ST_OK, "Wayland 输入就绪（%s：虚拟指针、虚拟键盘、边缘检测、指针锁定）", desktop ? desktop : "wlroots");
     }
     g_string_free(missing, TRUE);
-    update_screen();
+    refresh_outputs();
     W.watch = g_unix_fd_add(wl_display_get_fd(W.display), G_IO_IN | G_IO_ERR | G_IO_HUP, on_wayland, NULL);
     flush();
 }

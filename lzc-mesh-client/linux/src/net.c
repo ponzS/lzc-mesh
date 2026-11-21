@@ -21,6 +21,7 @@ static guint connection_generation;
 static GCancellable *pending_connect;
 static guint ping_timer;
 static gint64 last_motion_log;
+static int announced_screen_w, announced_screen_h;
 
 bool net_busy(void) { return connecting; }
 
@@ -60,7 +61,7 @@ static void str(JsonBuilder *b, const char *k, const char *v) { json_builder_set
 static void boolean(JsonBuilder *b, const char *k, bool v) { json_builder_set_member_name(b, k); json_builder_add_boolean_value(b, v); }
 static void done(JsonBuilder *b) { json_builder_end_object(b); send_builder(b); }
 
-void net_send_hello(void) {
+static void send_hello(void) {
     if(!identity_init())return;
     char *name = g_strdup(g_get_host_name());
     JsonBuilder *b = msg(app.auth_verified?"hello":"device_hello");
@@ -74,7 +75,15 @@ void net_send_hello(void) {
     str(b, "version", LZC_MESH_VERSION);
     done(b);
     g_free(name);
-    if (app.auth_verified && !app.sharing_enabled) net_send_sharing(false);
+    announced_screen_w = app.screen_w;
+    announced_screen_h = app.screen_h;
+}
+
+void net_update_screen(void) {
+    if (app.hub_connected && app.auth_verified &&
+        (app.screen_w != announced_screen_w || app.screen_h != announced_screen_h)) {
+        send_hello();
+    }
 }
 void net_send_edge(const char *dir, double pos) { JsonBuilder *b = msg("edge"); str(b, "dir", dir); num(b, "pos", pos); done(b); }
 void net_send_motion(double dx, double dy) {
@@ -235,6 +244,7 @@ void net_inject(JsonObject *o) {
         app_set_status(S_TRUST,app.auth_verified?ST_OK:ST_WARN,"%s · 指纹 %s",app.auth_verified?"已批准":!strcmp(state,"key_mismatch")?"凭证不匹配，拒绝绑定":!strcmp(state,"revoked")?"信任已撤销":"等待管理页核对并批准",identity_fingerprint());
         app_refresh_activity();update_control_status();update_clipboard_status();
         if(app.auth_verified && !app.sharing_enabled)net_send_sharing(false);
+        net_update_screen();
         return;
     }
     if (!app_operational() && (!strcmp(t,"capture") || !strcmp(t,"enter") || !strcmp(t,"move") || !strcmp(t,"button") || !strcmp(t,"key") || !strcmp(t,"wheel") || !strcmp(t,"clipboard") || !strcmp(t,"files"))) return;
@@ -390,7 +400,7 @@ static void on_connected(GObject *src, GAsyncResult *res, gpointer u) {
     app_refresh_activity();
     app_set_status(S_HUB, ST_OK, "已连接");
     app_log("已连接设备接力中枢");
-    net_send_hello();
+    send_hello();
     direct_hub("{\"t\":\"hub_connected\"}");
     ping_timer = g_timeout_add_seconds(20, ping, NULL);
 }
